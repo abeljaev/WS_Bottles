@@ -143,6 +143,34 @@ def example_function(param1: str, param2: int) -> bool:
 - **WebSocket thread**: Asyncio event loop для сервера
 - **Camera thread**: Непрерывный захват кадров в буфер
 
+## Development Workflow
+
+**Перед каждым изменением:**
+1. Консультация с Codex агентом для планирования и советов
+2. Небольшие инкрементальные изменения
+3. Покрытие тестами нового кода
+4. Коммит и пуш после каждого логического изменения
+5. Обновление docs/IN_PROGRESS.md и DONE.md
+
+**Best Practices:**
+- Retry механизмы для Modbus и WebSocket
+- Graceful degradation при ошибках
+- Отказоустойчивость — система должна продолжать работу при сбоях компонентов
+
+**Тестирование:**
+```bash
+pytest tests/ -v
+```
+
+## Documentation
+
+Документация в папке `docs/`:
+- `ARCHITECTURE.md` — архитектура системы
+- `BACKLOG.md` — запланированные задачи
+- `IN_PROGRESS.md` — задачи в работе
+- `DONE.md` — выполненные задачи
+- `PLANS.md` — планы развития
+
 ## Legacy Files (не используются в основном потоке)
 
 - `interference.py` — альтернативная реализация инференса
