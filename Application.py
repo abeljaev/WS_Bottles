@@ -52,6 +52,7 @@ class Application:
 
         # Отслеживание завесы
         self.prev_veil_state = 0            # Предыдущее состояние завесы
+        self.veil_just_cleared = False      # Флаг: завеса только что освободилась
 
     def signal_handler(self, sig, frame):
         self.running = False
@@ -227,11 +228,24 @@ class Application:
 
                     # Отслеживание завесы
                     current_veil = self.PLC.get_state_veil()
-                    container_detected = self.PLC.get_bottle_exist() == 1 or self.PLC.get_bank_exist() == 1
+                    bottle_exist = self.PLC.get_bottle_exist()
+                    bank_exist = self.PLC.get_bank_exist()
+                    container_detected = bottle_exist == 1 or bank_exist == 1
+
+                    # DEBUG: показать состояние датчиков
+                    print(f"[DEBUG] veil={current_veil} prev={self.prev_veil_state} bottle={bottle_exist} bank={bank_exist} cleared={self.veil_just_cleared}", flush=True)
 
                     # Детект перехода завесы: пересечена → свободна (рука убрана)
-                    # Сразу запускаем инференс если есть контейнер
-                    if self.prev_veil_state == 1 and current_veil == 0 and container_detected:
+                    if self.prev_veil_state == 1 and current_veil == 0:
+                        self.veil_just_cleared = True
+                        print("[Veil] Завеса освободилась, ждём контейнер...", flush=True)
+
+                    # Сброс флага если завеса снова пересечена
+                    if current_veil == 1:
+                        self.veil_just_cleared = False
+
+                    # Запуск инференса: завеса была освобождена + контейнер появился
+                    if self.veil_just_cleared and container_detected:
                         # Определяем тип контейнера по ПЛК
                         if self.PLC.get_bottle_exist() == 1:
                             self.current_plc_detection = "bottle"
@@ -240,8 +254,9 @@ class Application:
                             self.current_plc_detection = "bank"
                             vision_cmd = "bank_exist"
 
-                        print(f"[Veil] Завеса освободилась + контейнер → WAITING_VISION ({self.current_plc_detection})", flush=True)
+                        print(f"[Veil] Контейнер обнаружен → WAITING_VISION ({self.current_plc_detection})", flush=True)
                         self.vision_request_time = time.time()
+                        self.veil_just_cleared = False  # Сброс флага
 
                         # Событие: контейнер обнаружен
                         self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection})
