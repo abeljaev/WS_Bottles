@@ -1,8 +1,17 @@
 """
 Pytest конфигурация и общие фикстуры.
 """
+import sys
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
+
+
+# Мокаем модули, которые недоступны в тестовом окружении
+sys.modules['modbus_tk'] = MagicMock()
+sys.modules['modbus_tk.defines'] = MagicMock()
+sys.modules['modbus_tk.modbus_rtu'] = MagicMock()
+sys.modules['serial'] = MagicMock()
 
 
 @pytest.fixture
