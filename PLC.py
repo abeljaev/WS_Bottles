@@ -32,6 +32,12 @@ class PLC:
         self.modbus_register_speed = ModbusRegister(self.slave, 24)
         self.modbus_register_counter = ModbusRegister(self.slave, 25)
 
+        # Счетчики и проценты заполнения
+        self.modbus_register_bank_counter = ModbusRegister(self.slave, 20)
+        self.modbus_register_bottle_counter = ModbusRegister(self.slave, 21)
+        self.modbus_register_bottle_percent = ModbusRegister(self.slave, 22)
+        self.modbus_register_bank_percent = ModbusRegister(self.slave, 23)
+
         #SPEED
         self.slave.add_block('holding', cst.HOLDING_REGISTERS, 10, 17)
         self.modbus_register_speed.set_value(speed)
@@ -43,6 +49,10 @@ class PLC:
     def update_data(self):
         self.modbus_register_status.sync_from_device()
         self.modbus_register_counter.sync_from_device()
+        self.modbus_register_bank_counter.sync_from_device()
+        self.modbus_register_bottle_counter.sync_from_device()
+        self.modbus_register_bottle_percent.sync_from_device()
+        self.modbus_register_bank_percent.sync_from_device()
 
     # Команды на получение статуса (регистр 26)
     def get_state_veil(self):
@@ -86,6 +96,23 @@ class PLC:
     
     def get_right_movement_error(self):
         return self.modbus_register_status.get_bit(13)
+
+    # Счетчики и проценты заполнения (регистры 20-23)
+    def get_bank_count(self) -> int:
+        """Получить общее количество банок (регистр 20)."""
+        return self.modbus_register_bank_counter.get_value()
+
+    def get_bottle_count(self) -> int:
+        """Получить общее количество бутылок (регистр 21)."""
+        return self.modbus_register_bottle_counter.get_value()
+
+    def get_bottle_fill_percent(self) -> int:
+        """Получить процент заполнения мешка бутылок (регистр 22)."""
+        return self.modbus_register_bottle_percent.get_value()
+
+    def get_bank_fill_percent(self) -> int:
+        """Получить процент заполнения мешка банок (регистр 23)."""
+        return self.modbus_register_bank_percent.get_value()
 
     # Команды на отправку команд (регистр 25)
     def cmd_lock_and_block_carriage(self):
