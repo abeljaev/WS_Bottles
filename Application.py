@@ -52,8 +52,6 @@ class Application:
 
         # Отслеживание завесы
         self.prev_veil_state = 0            # Предыдущее состояние завесы
-        self.veil_cleared_time = None       # Время освобождения завесы
-        self.veil_debounce = 0.3            # Задержка стабилизации (сек)
 
     def signal_handler(self, sig, frame):
         self.running = False
@@ -232,17 +230,8 @@ class Application:
                     container_detected = self.PLC.get_bottle_exist() == 1 or self.PLC.get_bank_exist() == 1
 
                     # Детект перехода завесы: пересечена → свободна (рука убрана)
-                    if self.prev_veil_state == 1 and current_veil == 0:
-                        print("[Veil] Завеса освободилась, ждём стабилизации...", flush=True)
-                        self.veil_cleared_time = time.time()
-
-                    self.prev_veil_state = current_veil
-
-                    # Запуск инференса после освобождения завесы + debounce
-                    if (self.veil_cleared_time is not None and
-                        container_detected and
-                        time.time() - self.veil_cleared_time > self.veil_debounce):
-
+                    # Сразу запускаем инференс если есть контейнер
+                    if self.prev_veil_state == 1 and current_veil == 0 and container_detected:
                         # Определяем тип контейнера по ПЛК
                         if self.PLC.get_bottle_exist() == 1:
                             self.current_plc_detection = "bottle"
@@ -251,9 +240,8 @@ class Application:
                             self.current_plc_detection = "bank"
                             vision_cmd = "bank_exist"
 
-                        print(f"[State] Завеса свободна + контейнер → WAITING_VISION ({self.current_plc_detection})", flush=True)
+                        print(f"[Veil] Завеса освободилась + контейнер → WAITING_VISION ({self.current_plc_detection})", flush=True)
                         self.vision_request_time = time.time()
-                        self.veil_cleared_time = None  # Сброс триггера
 
                         # Событие: контейнер обнаружен
                         self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection})
@@ -263,10 +251,7 @@ class Application:
                         with self.state_lock:
                             self.state = AppState.WAITING_VISION
 
-                    elif not container_detected:
-                        # Нет контейнера — сброс триггера завесы
-                        self.veil_cleared_time = None
-                        self.websocket_server.send_to_client("vision", "none")
+                    self.prev_veil_state = current_veil
 
                     # Обработка команд от app
                     app_message = self.websocket_server.get_command("app")
