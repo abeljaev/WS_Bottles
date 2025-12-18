@@ -96,7 +96,14 @@ OUTPUT_DIR=real_time
 
 ## Model
 
-YOLO11n classification model: `/home/abelyaev/Documents/CODE/BottlesClassifier/best_rknn_model`
+**Production (RKNN):** `/home/abelyaev/Documents/CODE/BottlesClassifier/best_rknn_model`
+- Оптимизирована для Rockchip NPU
+
+**Development (PyTorch):** `weights/best_11s.pt`
+- YOLO11s для тестирования на x86/ARM без NPU
+- Использовать: `MODEL_PATH=weights/best_11s.pt`
+
+**Параметры:**
 - Input: 1024x1024 RGB
 - Classes: CAN (0), FOREIGN (1), PET (2)
 - Mapping: PET→"bottle", CAN→"bank", FOREIGN→"none"
