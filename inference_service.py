@@ -14,6 +14,8 @@ Inference Service - WebSocket клиент для классификации о�
 """
 import argparse
 import asyncio
+import base64
+import json
 import os
 import sys
 import time
@@ -176,65 +178,163 @@ class InferenceClient:
         """
         Обработка сообщения от сервера.
 
+        Поддерживает форматы:
+        - Строки: "bottle_exist", "bank_exist", "none"
+        - JSON: {"command": "get_photo"}
+
         Args:
-            message: Сообщение от сервера ("bottle_exist", "bank_exist", "none").
+            message: Сообщение от сервера.
 
         Returns:
-            Ответ клиенту ("bottle", "bank", "none") или None если ответ не требуется.
+            Ответ клиенту или None если ответ не требуется.
         """
-        message = message.strip().lower()
         print(f"[InferenceClient] Получено сообщение: {message}")
+
+        # Попытка парсинга JSON команды
+        try:
+            data = json.loads(message)
+            command = data.get("command")
+
+            if command == "get_photo":
+                return await self._handle_get_photo()
+
+            print(f"[InferenceClient] Неизвестная JSON команда: {command}")
+            return json.dumps({"error": "unknown_command"})
+
+        except json.JSONDecodeError:
+            pass  # Fallback к строковому протоколу
+
+        # Строковый протокол
+        message = message.strip().lower()
 
         if message == "none":
             return "none"
 
         if message in ("bottle_exist", "bank_exist"):
-            # Выполняем инференс
-            if not self._camera.is_open():
-                print("[InferenceClient] Камера не открыта")
-                return "none"
+            return await self._handle_inference()
 
-            # Получаем последний кадр
+        print(f"[InferenceClient] Неизвестное сообщение: {message}")
+        return None
+
+    async def _handle_inference(self) -> str:
+        """
+        Выполнить мульти-инференс (3 кадра) и вернуть результат по большинству.
+
+        Returns:
+            "bottle", "bank" или "none".
+        """
+        if not self._camera.is_open():
+            print("[InferenceClient] Камера не открыта")
+            return "none"
+
+        num_frames = 3
+        results = []
+        confidences = []
+
+        for i in range(num_frames):
+            # Небольшая задержка между кадрами для разнообразия
+            if i > 0:
+                await asyncio.sleep(0.1)
+
+            # Получаем кадр
             frame = self._camera.get_frame()
             if frame is None:
-                # Пробуем захватить напрямую
                 frame = self._camera.capture_single_frame()
                 if frame is None:
-                    print("[InferenceClient] Не удалось получить кадр")
-                    return "none"
+                    print(f"[InferenceClient] Не удалось получить кадр {i+1}/{num_frames}")
+                    continue
 
             # Сохраняем кадр если нужно
             if self._settings.save_frames:
-                self._save_frame(frame)
+                self._save_frame(frame, suffix=f"_inf{i+1}")
 
             # Выполняем инференс
             class_name, confidence = self._engine.predict(frame)
-            
-            # Маппим результат модели на формат ответа:
-            # PET (пластиковая бутылка) -> "bottle"
-            # CAN (алюминиевая банка) -> "bank"
-            # FOREIGN/NONE -> "none"
+
+            # Маппим результат
             if class_name == "PET":
                 result = "bottle"
             elif class_name == "CAN":
                 result = "bank"
             else:
                 result = "none"
-            
-            print(f"[InferenceClient] Результат инференса: {class_name} ({confidence:.3f}) -> {result}")
-            return result
 
-        print(f"[InferenceClient] Неизвестное сообщение: {message}")
-        return None
+            results.append(result)
+            confidences.append(confidence)
+            print(f"[InferenceClient] Кадр {i+1}/{num_frames}: {class_name} ({confidence:.3f}) -> {result}")
 
-    def _save_frame(self, frame) -> None:
-        """Сохранить кадр на диск."""
+        if not results:
+            print("[InferenceClient] Не удалось получить ни одного кадра")
+            return "none"
+
+        # Голосование по большинству
+        from collections import Counter
+        vote_counts = Counter(results)
+        final_result, count = vote_counts.most_common(1)[0]
+        avg_confidence = sum(confidences) / len(confidences)
+
+        print(f"[InferenceClient] Итог: {final_result} (голосов: {count}/{len(results)}, средняя уверенность: {avg_confidence:.3f})")
+        return final_result
+
+    async def _handle_get_photo(self) -> str:
+        """
+        Обработчик команды get_photo.
+
+        Захватывает кадр и возвращает его как base64 JSON.
+
+        Returns:
+            JSON с photo_base64 или error.
+        """
+        if not self._camera.is_open():
+            print("[InferenceClient] Камера не открыта")
+            return json.dumps({"error": "camera_unavailable"})
+
+        # Получаем кадр
+        frame = self._camera.get_frame()
+        if frame is None:
+            frame = self._camera.capture_single_frame()
+            if frame is None:
+                print("[InferenceClient] Не удалось получить кадр для get_photo")
+                return json.dumps({"error": "frame_capture_failed"})
+
+        # Сохраняем фото в папку для тестирования
+        saved_path = self._save_frame(frame, suffix="_get_photo")
+
+        # Кодируем в JPEG и base64
         try:
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            photo_b64 = base64.b64encode(buffer).decode('utf-8')
+
+            return json.dumps({
+                "photo_base64": photo_b64,
+                "timestamp": datetime.now().isoformat(),
+                "saved_path": str(saved_path) if saved_path else None
+            })
+        except Exception as e:
+            print(f"[InferenceClient] Ошибка кодирования кадра: {e}")
+            return json.dumps({"error": "encoding_failed"})
+
+    def _save_frame(self, frame, suffix: str = "") -> Path:
+        """
+        Сохранить кадр на диск.
+
+        Args:
+            frame: Кадр для сохранения.
+            suffix: Суффикс для имени файла.
+
+        Returns:
+            Путь к сохранённому файлу или None при ошибке.
+        """
+        try:
+            self._settings.output_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            filename = self._settings.output_dir / f"{timestamp}.jpg"
+            filename = self._settings.output_dir / f"{timestamp}{suffix}.jpg"
             cv2.imwrite(str(filename), frame)
+            print(f"[InferenceClient] Сохранено: {filename}")
+            return filename
         except Exception as e:
             print(f"[InferenceClient] Ошибка сохранения кадра: {e}")
+            return None
 
     def _cleanup(self) -> None:
         """Освободить ресурсы."""
