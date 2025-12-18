@@ -3,6 +3,7 @@ import modbus_tk.defines as cst
 import serial
 from modbus_tk import modbus_rtu
 import logging
+import threading
 
 logging.getLogger('modbus_tk').setLevel(logging.CRITICAL)
 
@@ -42,17 +43,22 @@ class PLC:
         self.slave.add_block('holding', cst.HOLDING_REGISTERS, 10, 17)
         self.modbus_register_speed.set_value(speed)
 
+        # Lock для потокобезопасного доступа к Modbus
+        self._modbus_lock = threading.Lock()
+
     def stop(self):
         self.server.stop()
         self.ser.close()
 
     def update_data(self):
-        self.modbus_register_status.sync_from_device()
-        self.modbus_register_counter.sync_from_device()
-        self.modbus_register_bank_counter.sync_from_device()
-        self.modbus_register_bottle_counter.sync_from_device()
-        self.modbus_register_bottle_percent.sync_from_device()
-        self.modbus_register_bank_percent.sync_from_device()
+        """Синхронизировать данные с устройства (потокобезопасно)."""
+        with self._modbus_lock:
+            self.modbus_register_status.sync_from_device()
+            self.modbus_register_counter.sync_from_device()
+            self.modbus_register_bank_counter.sync_from_device()
+            self.modbus_register_bottle_counter.sync_from_device()
+            self.modbus_register_bottle_percent.sync_from_device()
+            self.modbus_register_bank_percent.sync_from_device()
 
     # Команды на получение статуса (регистр 26)
     def get_state_veil(self):
@@ -114,33 +120,43 @@ class PLC:
         """Получить процент заполнения мешка банок (регистр 23)."""
         return self.modbus_register_bank_percent.get_value()
 
-    # Команды на отправку команд (регистр 25)
+    # Команды на отправку команд (регистр 25) - потокобезопасные
     def cmd_lock_and_block_carriage(self):
-        self.modbus_register_cmd.set_bit(0, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(0, 1)
+
     def cmd_weight_error_reset(self):
-        self.modbus_register_cmd.set_bit(1, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(1, 1)
+
     def cmd_reset_bank_counters(self):
-        self.modbus_register_cmd.set_bit(2, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(2, 1)
+
     def cmd_reset_bottle_counters(self):
-        self.modbus_register_cmd.set_bit(3, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(3, 1)
+
     def cmd_force_move_carriage_left(self):
-        self.modbus_register_cmd.set_bit(4, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(4, 1)
+
     def cmd_force_move_carriage_right(self):
-        self.modbus_register_cmd.set_bit(5, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(5, 1)
+
     def cmd_radxa_detected_bank(self):
-        self.modbus_register_cmd.set_bit(6, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(6, 1)
+
     def cmd_radxa_detected_bottle(self):
-        self.modbus_register_cmd.set_bit(7, 1)
-    
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(7, 1)
+
     def cmd_reset_weight_reading(self):
-        self.modbus_register_cmd.set_bit(8, 1)
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(8, 1)
 
     def cmd_full_clear_register(self):
-        self.modbus_register_cmd.reset_all_bits()
+        with self._modbus_lock:
+            self.modbus_register_cmd.reset_all_bits()
