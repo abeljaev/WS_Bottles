@@ -232,10 +232,6 @@ class InferenceClient:
         confidences = []
 
         for i in range(num_frames):
-            # Небольшая задержка между кадрами для разнообразия
-            if i > 0:
-                await asyncio.sleep(0.1)
-
             # Получаем кадр
             frame = self._camera.get_frame()
             if frame is None:
