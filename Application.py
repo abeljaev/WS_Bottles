@@ -1,4 +1,6 @@
 import time
+import json
+from datetime import datetime
 from PLC import PLC
 import threading
 import signal
@@ -7,11 +9,13 @@ from WebSocket import WebSocket
 from enum import Enum
 
 
-
 class AppState(Enum):
+    """Состояния конечного автомата приложения."""
     IDLE = "idle"
+    WAITING_VISION = "waiting_vision"
     DUMPING_PLASTIC = "dumping_plastic"
     DUMPING_ALUMINUM = "dumping_aluminum"
+    ERROR = "error"
 
 class Application:
     def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8080, web_socket_host = 'localhost', speed = 500):
@@ -35,8 +39,21 @@ class Application:
         
         # State Machine
         self.state = AppState.IDLE
-        self.dump_started_time = None
-        self.dump_timeout = 3  # секунд
+        self.state_lock = threading.Lock()  # Lock для потокобезопасности
+
+        # Таймауты (секунды)
+        self.vision_timeout = 2.0           # Таймаут ответа от vision
+        self.dump_timeout = 3.0             # Таймаут движения каретки
+
+        # Временные данные для state machine
+        self.current_plc_detection = None   # "bottle" или "bank" - что детектировал ПЛК
+        self.vision_request_time = None     # Время отправки запроса к vision
+        self.dump_started_time = None       # Время начала сброса каретки
+
+        # Отслеживание завесы
+        self.prev_veil_state = 0            # Предыдущее состояние завесы
+        self.veil_cleared_time = None       # Время освобождения завесы
+        self.veil_debounce = 0.3            # Задержка стабилизации (сек)
 
     def signal_handler(self, sig, frame):
         self.running = False
@@ -134,93 +151,142 @@ class Application:
                 if self.state == AppState.DUMPING_PLASTIC:
                     # Ждем достижения левого датчика
                     if self.PLC.get_state_left_sensor_carriage() == 1:
-                        print("[State] Левый датчик достигнут, обнуляем регистры")
+                        print("[State] Левый датчик достигнут, обнуляем регистры", flush=True)
                         self.PLC.cmd_full_clear_register()
-                        self.state = AppState.IDLE
+                        with self.state_lock:
+                            self.state = AppState.IDLE
                         self.dump_started_time = None
+                        # Событие: контейнер принят
+                        self.send_event_to_app("container_accepted", {
+                            "type": "PET",
+                            "counter": self.PLC.get_bottle_count()
+                        })
                     elif time.time() - self.dump_started_time > self.dump_timeout:
-                        print("[State] ТАЙМАУТ при движении влево!")
+                        print("[State] ТАЙМАУТ при движении влево! → ERROR", flush=True)
                         self.PLC.cmd_full_clear_register()
-                        self.state = AppState.IDLE
+                        with self.state_lock:
+                            self.state = AppState.ERROR
                         self.dump_started_time = None
-                
+                        # Событие: аппаратная ошибка
+                        self.send_event_to_app("hardware_error", {
+                            "error_code": "carriage_left_timeout",
+                            "message": "Таймаут движения каретки влево"
+                        })
+
                 elif self.state == AppState.DUMPING_ALUMINUM:
                     # Ждем достижения правого датчика
                     if self.PLC.get_state_right_sensor_carriage() == 1:
-                        print("[State] Правый датчик достигнут, обнуляем регистры")
+                        print("[State] Правый датчик достигнут, обнуляем регистры", flush=True)
                         self.PLC.cmd_full_clear_register()
-                        self.state = AppState.IDLE
+                        with self.state_lock:
+                            self.state = AppState.IDLE
                         self.dump_started_time = None
+                        # Событие: контейнер принят
+                        self.send_event_to_app("container_accepted", {
+                            "type": "ALUMINUM",
+                            "counter": self.PLC.get_bank_count()
+                        })
                     elif time.time() - self.dump_started_time > self.dump_timeout:
-                        print("[State] ТАЙМАУТ при движении вправо!")
+                        print("[State] ТАЙМАУТ при движении вправо! → ERROR", flush=True)
                         self.PLC.cmd_full_clear_register()
-                        self.state = AppState.IDLE
+                        with self.state_lock:
+                            self.state = AppState.ERROR
                         self.dump_started_time = None
+                        # Событие: аппаратная ошибка
+                        self.send_event_to_app("hardware_error", {
+                            "error_code": "carriage_right_timeout",
+                            "message": "Таймаут движения каретки вправо"
+                        })
+
+                elif self.state == AppState.WAITING_VISION:
+                    # Ждем ответа от vision (одноразовое чтение)
+                    vision_response = self.websocket_server.get_command("vision")
+
+                    if vision_response and vision_response != "":
+                        # Получен ответ от vision
+                        print(f"[State] Vision ответил: {vision_response}", flush=True)
+                        self._handle_vision_response_with_events(vision_response)
+                        with self.state_lock:
+                            self.state = AppState.IDLE
+                        self.vision_request_time = None
+                        self.current_plc_detection = None
+                    elif time.time() - self.vision_request_time > self.vision_timeout:
+                        # Таймаут ожидания vision
+                        print("[State] ТАЙМАУТ ожидания vision → IDLE", flush=True)
+                        with self.state_lock:
+                            self.state = AppState.IDLE
+                        self.vision_request_time = None
+                        self.current_plc_detection = None
+                        # Событие: контейнер не распознан
+                        self.send_event_to_app("container_not_recognized", {})
+
+                elif self.state == AppState.ERROR:
+                    # В состоянии ошибки принимаем команды, но обрабатываем только некоторые
+                    self._handle_error_state_commands()
 
                 # ОБРАБОТКА КОМАНД ТОЛЬКО В СОСТОЯНИИ IDLE
                 elif self.state == AppState.IDLE:
-                    
-                    # Vision обработка
-                    if self.PLC.get_bottle_exist() == 1:
-                        self.websocket_server.send_to_client("vision", "bottle_exist")
-                        vision_response = self.websocket_server.get_state("vision")
-                        if vision_response == "bottle":
-                            # self.state = AppState.DUMPING_PLASTIC
-                            self.PLC.cmd_radxa_detected_bottle()
-                            
-                            
 
-                    elif self.PLC.get_bank_exist() == 1:
-                        self.websocket_server.send_to_client("vision", "bank_exist")
-                        vision_response = self.websocket_server.get_state("vision")
-                        if vision_response == "bank":
-                            self.PLC.cmd_radxa_detected_bank()
-                            # self.state = AppState.DUMPING_ALUMINUM
+                    # Отслеживание завесы
+                    current_veil = self.PLC.get_state_veil()
+                    container_detected = self.PLC.get_bottle_exist() == 1 or self.PLC.get_bank_exist() == 1
 
-                    else:
-                        # pass
+                    # Детект перехода завесы: пересечена → свободна (рука убрана)
+                    if self.prev_veil_state == 1 and current_veil == 0:
+                        print("[Veil] Завеса освободилась, ждём стабилизации...", flush=True)
+                        self.veil_cleared_time = time.time()
+
+                    self.prev_veil_state = current_veil
+
+                    # Запуск инференса после освобождения завесы + debounce
+                    if (self.veil_cleared_time is not None and
+                        container_detected and
+                        time.time() - self.veil_cleared_time > self.veil_debounce):
+
+                        # Определяем тип контейнера по ПЛК
+                        if self.PLC.get_bottle_exist() == 1:
+                            self.current_plc_detection = "bottle"
+                            vision_cmd = "bottle_exist"
+                        else:
+                            self.current_plc_detection = "bank"
+                            vision_cmd = "bank_exist"
+
+                        print(f"[State] Завеса свободна + контейнер → WAITING_VISION ({self.current_plc_detection})", flush=True)
+                        self.vision_request_time = time.time()
+                        self.veil_cleared_time = None  # Сброс триггера
+
+                        # Событие: контейнер обнаружен
+                        self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection})
+                        # Сброс старых ответов vision перед новым запросом
+                        self.websocket_server.get_command("vision")
+                        self.websocket_server.send_to_client("vision", vision_cmd)
+                        with self.state_lock:
+                            self.state = AppState.WAITING_VISION
+
+                    elif not container_detected:
+                        # Нет контейнера — сброс триггера завесы
+                        self.veil_cleared_time = None
                         self.websocket_server.send_to_client("vision", "none")
 
                     # Обработка команд от app
                     app_message = self.websocket_server.get_command("app")
-                    
-                    # Парсим команду и параметр (формат: "command:param")
-                    if ":" in app_message:
-                        app_command, app_param = app_message.split(":", 1)
-                    else:
-                        app_command = app_message
-                        app_param = None
+                    app_command, params = self.parse_command(app_message)
+                    app_param = params.get("param")
 
                     if app_command == "get_photo":
-                        pass
+                        self.handle_get_photo()
                     elif app_command == "get_device_info":
-                        pass
-                    elif app_command == "enter_service_mode":
-                        pass
-                    elif app_command == "exit_service_mode":
-                        pass
-
+                        self.handle_get_device_info()
                     elif app_command == "dump_container":
-                        # Тип контейнера приходит как параметр: plastic или aluminium
-                        if app_param == "plastic":
-                            print("[State] Начинаем выброс ПЛАСТИКА (движение влево)")
-                            self.state = AppState.DUMPING_PLASTIC
-                            self.dump_started_time = time.time()
-                            self.PLC.cmd_force_move_carriage_left()
-                        elif app_param == "aluminium":
-                            print("[State] Начинаем выброс АЛЮМИНИЯ (движение вправо)")
-                            self.state = AppState.DUMPING_ALUMINUM
-                            self.dump_started_time = time.time()
-                            self.PLC.cmd_force_move_carriage_right()
-                        else:
-                            print(f"[State] Неизвестный тип контейнера: {app_param}")
+                        self.handle_container_dump(app_param)
+                    elif app_command == "container_unloaded":
+                        self.handle_container_unloaded(app_param)
 
-                    elif app_command == "restore_device":
-                        pass
-                    elif app_command == "unlock_door":
-                        pass
-                    elif app_command == "lock_door":
-                        pass
+                    # Заглушки для будущих команд
+                    elif app_command in ("enter_service_mode", "exit_service_mode",
+                                         "restore_device", "unlock_door", "lock_door",
+                                         "open_shutter", "reboot_device"):
+                        self.handle_stub_command(app_command)
 
                     # Служебные команды (работают только в IDLE)
                     elif app_command == "cmd_full_clear_register":
@@ -261,6 +327,275 @@ class Application:
                 
         except Exception as e:
             pass
+
+    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СОБЫТИЙ И КОМАНД ===
+
+    def create_event(self, event_name: str, data: dict = None) -> str:
+        """
+        Создать JSON событие для отправки клиенту app.
+
+        Args:
+            event_name: Название события.
+            data: Данные события (опционально).
+
+        Returns:
+            JSON строка с событием.
+        """
+        return json.dumps({
+            "event": event_name,
+            "data": data or {},
+            "timestamp": datetime.now().isoformat()
+        })
+
+    def send_event_to_app(self, event_name: str, data: dict = None):
+        """
+        Отправить событие клиенту app.
+
+        Args:
+            event_name: Название события.
+            data: Данные события (опционально).
+        """
+        event = self.create_event(event_name, data)
+        self.websocket_server.send_to_client("app", event)
+        print(f"[App→] {event_name}: {data}", flush=True)
+
+    def parse_command(self, message: str) -> tuple:
+        """
+        Парсить команду от клиента (JSON или строка).
+
+        Поддерживает форматы:
+        - JSON: {"command": "name", "param": "value"}
+        - JSON: {"command": "name", "container_type": "plastic"}
+        - JSON: {"command": "name", "type": "plastic"}
+        - Строка с параметром: "command:param"
+        - Простая строка: "command"
+
+        Args:
+            message: Сообщение от клиента.
+
+        Returns:
+            Tuple (command_name, params_dict).
+        """
+        if not message:
+            return None, {}
+
+        # Попытка парсинга JSON
+        try:
+            data = json.loads(message)
+            command = data.get("command")
+            # Нормализация: поддержка альтернативных ключей для параметра
+            if "container_type" in data and "param" not in data:
+                data["param"] = data["container_type"]
+            elif "type" in data and "param" not in data:
+                data["param"] = data["type"]
+            return command, data
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback к строковому формату
+        if ":" in message:
+            cmd, param = message.split(":", 1)
+            return cmd, {"param": param}
+
+        return message, {}
+
+    # === ОБРАБОТЧИКИ КОМАНД ОТ APP ===
+
+    def handle_get_device_info(self):
+        """
+        Обработчик команды get_device_info.
+
+        Собирает информацию с ПЛК и отправляет событие device_info.
+        """
+        device_info = {
+            "bottle_count": self.PLC.get_bottle_count(),
+            "bank_count": self.PLC.get_bank_count(),
+            "bottle_fill_percent": self.PLC.get_bottle_fill_percent(),
+            "bank_fill_percent": self.PLC.get_bank_fill_percent(),
+            "state": self.state.value,
+            "left_sensor": self.PLC.get_state_left_sensor_carriage(),
+            "center_sensor": self.PLC.get_state_center_sensor_carriage(),
+            "right_sensor": self.PLC.get_state_right_sensor_carriage(),
+            "weight_error": self.PLC.get_state_weight_error(),
+        }
+        self.send_event_to_app("device_info", device_info)
+
+    def handle_get_photo(self):
+        """
+        Обработчик команды get_photo.
+
+        Запрашивает фото у vision сервиса и пересылает клиенту app.
+        Если vision недоступен, возвращает ошибку.
+        """
+        # Сброс старых ответов и отправка команды get_photo в vision
+        self.websocket_server.get_command("vision")
+        self.websocket_server.send_to_client("vision", '{"command": "get_photo"}')
+
+        # Ждём ответа с таймаутом (одноразовое чтение)
+        start_time = time.time()
+        while time.time() - start_time < 2.0:
+            response = self.websocket_server.get_command("vision")
+            if not response:
+                time.sleep(0.1)
+                continue
+            if response.startswith("{"):
+                try:
+                    data = json.loads(response)
+                    if "photo_base64" in data:
+                        self.send_event_to_app("photo_ready", data)
+                        return
+                    elif "error" in data:
+                        self.send_event_to_app("photo_ready", {"error": data["error"]})
+                        return
+                except json.JSONDecodeError:
+                    pass
+            time.sleep(0.1)
+
+        # Таймаут - vision недоступен
+        self.send_event_to_app("photo_ready", {"error": "vision_unavailable"})
+
+    def handle_container_dump(self, container_type: str):
+        """
+        Обработчик команды container_dump.
+
+        Args:
+            container_type: Тип контейнера ("plastic" или "aluminium").
+        """
+        if container_type == "plastic":
+            print("[App] Команда: сброс пластика (влево)", flush=True)
+            with self.state_lock:
+                self.state = AppState.DUMPING_PLASTIC
+            self.dump_started_time = time.time()
+            self.PLC.cmd_force_move_carriage_left()
+            self.send_event_to_app("container_dumped", {"container_type": "plastic"})
+        elif container_type == "aluminium":
+            print("[App] Команда: сброс алюминия (вправо)", flush=True)
+            with self.state_lock:
+                self.state = AppState.DUMPING_ALUMINUM
+            self.dump_started_time = time.time()
+            self.PLC.cmd_force_move_carriage_right()
+            self.send_event_to_app("container_dumped", {"container_type": "aluminium"})
+        else:
+            print(f"[App] Неизвестный тип контейнера: {container_type}", flush=True)
+
+    def handle_container_unloaded(self, container_type: str):
+        """
+        Обработчик команды container_unloaded (мешок выгружен).
+
+        Args:
+            container_type: Тип контейнера ("plastic" или "aluminium").
+        """
+        if container_type == "plastic":
+            print("[App] Мешок пластика выгружен, сброс счетчика", flush=True)
+            self.PLC.cmd_reset_bottle_counters()
+        elif container_type == "aluminium":
+            print("[App] Мешок алюминия выгружен, сброс счетчика", flush=True)
+            self.PLC.cmd_reset_bank_counters()
+        self.send_event_to_app("container_unloaded_ack", {"container_type": container_type})
+
+    def handle_stub_command(self, command_name: str):
+        """
+        Заглушка для команд, которые пока не реализованы.
+
+        Args:
+            command_name: Название команды.
+        """
+        print(f"[App] Заглушка команды: {command_name}", flush=True)
+        self.send_event_to_app(f"{command_name}_ack", {"status": "not_implemented"})
+
+    # === ОБРАБОТЧИКИ VISION И ERROR ===
+
+    def _handle_vision_response(self, vision_response: str):
+        """
+        Обработка ответа от vision сервиса (без событий, для тестов).
+
+        Args:
+            vision_response: Ответ vision ("bottle", "bank", "none").
+        """
+        if vision_response == "none":
+            print("[Vision] Контейнер не распознан", flush=True)
+            return
+
+        # Проверяем совпадение с детектом ПЛК
+        if self.current_plc_detection == "bottle" and vision_response == "bottle":
+            print("[Vision] Подтверждено: бутылка → PLC cmd", flush=True)
+            self.PLC.cmd_radxa_detected_bottle()
+        elif self.current_plc_detection == "bank" and vision_response == "bank":
+            print("[Vision] Подтверждено: банка → PLC cmd", flush=True)
+            self.PLC.cmd_radxa_detected_bank()
+        else:
+            print(f"[Vision] Несовпадение! ПЛК: {self.current_plc_detection}, Vision: {vision_response}", flush=True)
+
+    def _handle_vision_response_with_events(self, vision_response: str):
+        """
+        Обработка ответа от vision сервиса с отправкой событий.
+
+        Args:
+            vision_response: Ответ vision ("bottle", "bank", "none").
+        """
+        if vision_response == "none":
+            print("[Vision] Контейнер не распознан", flush=True)
+            # Событие: контейнер не распознан
+            self.send_event_to_app("container_not_recognized", {})
+            return
+
+        # Проверяем совпадение с детектом ПЛК
+        if self.current_plc_detection == "bottle" and vision_response == "bottle":
+            print("[Vision] Подтверждено: бутылка → PLC cmd", flush=True)
+            self.PLC.cmd_radxa_detected_bottle()
+            # Событие: контейнер распознан
+            self.send_event_to_app("container_recognized", {
+                "type": "PET",
+                "confidence": 1.0  # TODO: получать от vision
+            })
+        elif self.current_plc_detection == "bank" and vision_response == "bank":
+            print("[Vision] Подтверждено: банка → PLC cmd", flush=True)
+            self.PLC.cmd_radxa_detected_bank()
+            # Событие: контейнер распознан
+            self.send_event_to_app("container_recognized", {
+                "type": "ALUMINUM",
+                "confidence": 1.0  # TODO: получать от vision
+            })
+        else:
+            print(f"[Vision] Несовпадение! ПЛК: {self.current_plc_detection}, Vision: {vision_response}", flush=True)
+            # Событие: несовпадение детекта
+            self.send_event_to_app("receiver_not_empty", {
+                "plc_type": self.current_plc_detection,
+                "vision_type": vision_response
+            })
+
+    def _handle_error_state_commands(self):
+        """
+        Обработка команд в состоянии ERROR.
+
+        Принимает все команды, но обрабатывает только:
+        - get_photo
+        - get_device_info
+        - dump_container
+        - restore_device
+        """
+        app_message = self.websocket_server.get_command("app")
+        app_command, params = self.parse_command(app_message)
+        if not app_command:
+            return
+
+        app_param = params.get("param")
+
+        # В ERROR обрабатываем только эти команды
+        if app_command == "get_photo":
+            self.handle_get_photo()
+        elif app_command == "get_device_info":
+            self.handle_get_device_info()
+        elif app_command == "dump_container":
+            self.handle_container_dump(app_param)
+        elif app_command == "restore_device":
+            print("[ERROR State] Восстановление устройства → IDLE", flush=True)
+            with self.state_lock:
+                self.state = AppState.IDLE
+            self.send_event_to_app("restore_device_ack", {"status": "ok"})
+        else:
+            print(f"[ERROR State] Команда {app_command} игнорируется", flush=True)
+
 
 if __name__ == "__main__":
     app = Application(
