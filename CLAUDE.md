@@ -96,11 +96,13 @@ OUTPUT_DIR=real_time
 
 ## Model
 
-**Production (RKNN):** `/home/abelyaev/Documents/CODE/BottlesClassifier/best_rknn_model`
-- Оптимизирована для Rockchip NPU
+**Фреймворк:** Ultralytics YOLO11 (classification)
+
+**Production (RKNN):** `best_rknn_model/`
+- Конвертирована для Rockchip NPU
 
 **Development (PyTorch):** `weights/best_11s.pt`
-- YOLO11s для тестирования на x86/ARM без NPU
+- Ultralytics YOLO11s для тестирования без NPU
 - Использовать: `MODEL_PATH=weights/best_11s.pt`
 
 **Параметры:**
