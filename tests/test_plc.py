@@ -114,5 +114,6 @@ class TestPLCRegisters:
         plc.update_data()
 
         # update_data должен вызвать sync_from_device для всех регистров
-        # status, counter, bank_counter, bottle_counter, bottle_percent, bank_percent = 6 раз
-        assert mock_instance.sync_from_device.call_count == 6
+        # status, bank_counter, bottle_counter, bottle_percent, bank_percent = 5 раз
+        # (counter закомментирован в PLC.py)
+        assert mock_instance.sync_from_device.call_count == 5

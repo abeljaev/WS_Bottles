@@ -21,6 +21,23 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 
+# Описания событий для красивого вывода
+EVENT_DESCRIPTIONS = {
+    "receiver_not_empty": "🟢 Приёмник: ЗАНЯТ",
+    "receiver_empty": "⚪ Приёмник: ПУСТ",
+    "container_detected": "📦 Контейнер обнаружен",
+    "container_recognized": "✅ Контейнер распознан",
+    "container_not_recognized": "❌ Контейнер НЕ распознан",
+    "container_accepted": "✅ Контейнер принят",
+    "container_dumped": "🗑️ Контейнер выгружен",
+    "container_unloaded_ack": "📤 Мешок выгружен",
+    "hardware_error": "⚠️ ОШИБКА ОБОРУДОВАНИЯ",
+    "device_info": "ℹ️ Информация об устройстве",
+    "photo_ready": "📷 Фото готово",
+    "restore_device_ack": "🔧 Устройство восстановлено",
+}
+
+
 class BackendSimulator:
     """
     Симулятор backend сервиса для тестирования WebSocket API.
@@ -126,14 +143,51 @@ class BackendSimulator:
                 self._print_event(event)
 
     def _print_event(self, event: dict):
-        """Вывести событие."""
+        """Вывести событие с красивым форматированием."""
         if "raw" in event:
-            print(f"  [Событие] raw: {event['raw']}")
+            print(f"  [Raw] {event['raw']}")
+            return
+
+        event_name = event.get("event", "unknown")
+        data = event.get("data", {})
+        timestamp = event.get("timestamp", "")
+
+        # Получаем описание события или используем имя
+        desc = EVENT_DESCRIPTIONS.get(event_name, f"[{event_name}]")
+
+        # Специальное форматирование для разных типов событий
+        if event_name == "hardware_error":
+            error_code = data.get("error_code", "unknown")
+            message = data.get("message", "")
+            print(f"\n  {desc}")
+            print(f"    Код: {error_code}")
+            print(f"    Сообщение: {message}")
+        elif event_name == "container_recognized":
+            container_type = data.get("type", "?")
+            confidence = data.get("confidence", "N/A")
+            print(f"\n  {desc}: {container_type} (уверенность: {confidence})")
+        elif event_name == "receiver_not_empty":
+            bottle = data.get("bottle_exist", False)
+            bank = data.get("bank_exist", False)
+            print(f"\n  {desc}")
+            print(f"    bottle_exist: {bottle}, bank_exist: {bank}")
+        elif event_name == "container_detected":
+            plc_type = data.get("plc_type", "?")
+            print(f"\n  {desc}: {plc_type}")
+        elif event_name == "container_accepted":
+            container_type = data.get("type", "?")
+            counter = data.get("counter", "?")
+            print(f"\n  {desc}: {container_type} (счётчик: {counter})")
+        elif event_name == "device_info":
+            print(f"\n  {desc}:")
+            for key, value in data.items():
+                print(f"    {key}: {value}")
         else:
-            event_name = event.get("event", "unknown")
-            data = event.get("data", {})
-            timestamp = event.get("timestamp", "")
-            print(f"  [Событие] {event_name}: {data} @ {timestamp}")
+            # Стандартный вывод
+            if data:
+                print(f"\n  {desc}: {data}")
+            else:
+                print(f"\n  {desc}")
 
     def show_event_history(self):
         """Показать историю событий."""
@@ -192,7 +246,10 @@ async def interactive_mode(simulator: BackendSimulator):
                 if event:
                     if "photo_base64" in event.get("data", {}):
                         b64_len = len(event["data"]["photo_base64"])
+                        photo_path = event["data"].get("photo_path", "не указан")
                         print(f"  [Событие] photo_ready: base64 ({b64_len} символов)")
+                        if photo_path != "не указан":
+                            print(f"  [Файл] Сохранено: {photo_path}")
                     else:
                         simulator._print_event(event)
             elif cmd == "3":

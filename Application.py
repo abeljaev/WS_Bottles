@@ -1,5 +1,8 @@
 import time
 import json
+import base64
+import os
+from pathlib import Path
 from datetime import datetime
 from PLC import PLC
 import threading
@@ -23,7 +26,7 @@ class AppState(Enum):
     ERROR = "error"
 
 class Application:
-    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8080, web_socket_host = 'localhost', speed = 500):
+    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8080, web_socket_host = 'localhost', speed = 500, photos_dir = 'photos'):
         self.PLC = None
         self.websocket_server = None
         self.serial_port = serial_port
@@ -36,7 +39,12 @@ class Application:
         self.web_socket_host = web_socket_host
         self.running = True
         self.speed = speed
+        self.photos_dir = Path(photos_dir)
+        # Создаём папку для фото, если её нет
+        self.photos_dir.mkdir(parents=True, exist_ok=True)
+
         self.flag = False
+        self.time_flag = time.time()
 
         self.thread_websocket = None
         self.thread_terminal = None
@@ -58,6 +66,20 @@ class Application:
         # Отслеживание завесы
         self.prev_veil_state = 0            # Предыдущее состояние завесы
         self.veil_just_cleared = False      # Флаг: завеса только что освободилась
+        self.veil_cleared_time = None       # Время когда veil_just_cleared стал True
+
+        # Отслеживание движения каретки после детекции
+        self.carriage_moving_bottle = False  # Флаг: каретка движется после детекции бутылки
+        self.carriage_moving_bank = False   # Флаг: каретка движется после детекции банки
+        self.carriage_moving_start_time = None  # Время начала движения каретки
+        self.carriage_reset_timeout = 2.0   # Таймаут для обнуления регистров (секунды)
+
+        # Отслеживание состояния приёмника и ошибок (для событий)
+        self._prev_receiver_state = False      # Предыдущее состояние приёмника (есть контейнер?)
+        self._prev_weight_error = False        # Предыдущее состояние ошибки веса
+        self._prev_weight_too_small = False    # Предыдущее состояние "вес слишком маленький"
+        self._prev_left_movement_error = False # Предыдущее состояние ошибки движения влево
+        self._prev_right_movement_error = False # Предыдущее состояние ошибки движения вправо
 
         # Command Registry: команда → (handler, требует_param)
         self._command_handlers = {
@@ -150,17 +172,43 @@ class Application:
         signal.signal(signal.SIGINT, self.signal_handler)
         try:
             while self.running:
+
+                # print(bin(self.PLC.modbus_register_cmd.get_value()), bin(self.PLC.modbus_register_status.get_value()))
+                # print(self.PLC.get_state_weight_error())
+                # print("AAA")
                 # ОБРАБОТКА СОСТОЯНИЙ STATE MACHINE
                 if self.state in (AppState.DUMPING_PLASTIC, AppState.DUMPING_ALUMINUM):
                     self._handle_dumping_state(self.state)
 
-                elif self.state == AppState.WAITING_VISION:
+                # Проверка таймаута для обнуления регистров после детекции
+                if self.carriage_moving_bottle and self.carriage_moving_start_time:
+                    if time.time() - self.carriage_moving_start_time > self.carriage_reset_timeout:
+                        logger.info("Таймаут движения каретки (бутылка) → обнуление регистра")
+                        self.PLC.cmd_radxa_stop_detected_bottle()
+                        self.carriage_moving_bottle = False
+                        self.carriage_moving_start_time = None
+                
+                if self.carriage_moving_bank and self.carriage_moving_start_time:
+                    if time.time() - self.carriage_moving_start_time > self.carriage_reset_timeout:
+                        logger.info("Таймаут движения каретки (банка) → обнуление регистра")
+                        self.PLC.cmd_radxa_stop_detected_bank()
+                        self.carriage_moving_bank = False
+                        self.carriage_moving_start_time = None
+
+                if self.state == AppState.WAITING_VISION:
                     # Ждем ответа от vision (одноразовое чтение)
                     vision_response = self.websocket_server.get_command("vision")
 
                     if vision_response and vision_response != "":
                         # Получен ответ от vision
                         logger.info(f"Vision ответил: {vision_response}")
+                        
+                        # Вычисляем дельту времени между veil_just_cleared и ответом от vision
+                        if self.veil_cleared_time is not None:
+                            delta_ms = (time.time() - self.veil_cleared_time) * 1000
+                            print(f"[TIMING] Дельта: {delta_ms:.2f} мс (veil_cleared → vision_response)")
+                            self.veil_cleared_time = None
+                        
                         self._handle_vision_response_with_events(vision_response)
                         with self.state_lock:
                             self.state = AppState.IDLE
@@ -169,6 +217,13 @@ class Application:
                     elif time.time() - self.vision_request_time > self.vision_timeout:
                         # Таймаут ожидания vision
                         logger.warning("ТАЙМАУТ ожидания vision → IDLE")
+                        
+                        # Вычисляем дельту времени даже при таймауте
+                        if self.veil_cleared_time is not None:
+                            delta_ms = (time.time() - self.veil_cleared_time) * 1000
+                            print(f"[TIMING] Дельта (таймаут): {delta_ms:.2f} мс (veil_cleared → vision_timeout)")
+                            self.veil_cleared_time = None
+                        
                         with self.state_lock:
                             self.state = AppState.IDLE
                         self.vision_request_time = None
@@ -192,14 +247,16 @@ class Application:
                     # Детект перехода завесы: пересечена → свободна (рука убрана)
                     if self.prev_veil_state == 1 and current_veil == 0:
                         self.veil_just_cleared = True
+                        self.veil_cleared_time = time.time()
                         logger.debug("Завеса освободилась, ждём контейнер...")
 
                     # Сброс флага если завеса снова пересечена
                     if current_veil == 1:
                         self.veil_just_cleared = False
+                        self.veil_cleared_time = None
 
                     # Запуск инференса: завеса была освобождена + контейнер появился
-                    if self.veil_just_cleared and container_detected:
+                    if self.veil_just_cleared or container_detected:
                         # Определяем тип контейнера по ПЛК
                         if self.PLC.get_bottle_exist() == 1:
                             self.current_plc_detection = "bottle"
@@ -229,7 +286,11 @@ class Application:
                         if app_command:
                             self._dispatch_command(app_command, params)
 
-                time.sleep(0.1)
+                # Проверка состояния приёмника и ошибок (отправка событий при изменении)
+                self._check_receiver_state()
+                self._check_hardware_errors()
+
+                time.sleep(0.01)
 
         except Exception as e:
             logger.error(f"Ошибка в главном цикле: {e}")
@@ -321,6 +382,60 @@ class Application:
         self.websocket_server.send_to_client("app", event)
         logger.debug(f"Event → app: {event_name}: {data}")
 
+    def _check_receiver_state(self):
+        """Проверить и отправить событие состояния приёмника."""
+        bottle = self.PLC.get_bottle_exist()
+        bank = self.PLC.get_bank_exist()
+        current_state = bottle or bank
+
+        if current_state != self._prev_receiver_state:
+            if current_state:
+                self.send_event_to_app("receiver_not_empty", {
+                    "bottle_exist": bottle,
+                    "bank_exist": bank
+                })
+            else:
+                self.send_event_to_app("receiver_empty", {})
+            self._prev_receiver_state = current_state
+
+    def _check_hardware_errors(self):
+        """Проверить и отправить события об ошибках оборудования."""
+        # Ошибка веса
+        weight_error = self.PLC.get_state_weight_error()
+        if weight_error and not self._prev_weight_error:
+            self.send_event_to_app("hardware_error", {
+                "error_code": "weight_error",
+                "message": "Ошибка взвешивания"
+            })
+        self._prev_weight_error = weight_error
+
+        # Вес слишком маленький
+        weight_small = self.PLC.get_weight_too_small()
+        if weight_small and not self._prev_weight_too_small:
+            self.send_event_to_app("hardware_error", {
+                "error_code": "weight_too_small",
+                "message": "Вес слишком маленький"
+            })
+        self._prev_weight_too_small = weight_small
+
+        # Ошибка движения влево
+        left_error = self.PLC.get_left_movement_error()
+        if left_error and not self._prev_left_movement_error:
+            self.send_event_to_app("hardware_error", {
+                "error_code": "left_movement_error",
+                "message": "Ошибка движения каретки влево"
+            })
+        self._prev_left_movement_error = left_error
+
+        # Ошибка движения вправо
+        right_error = self.PLC.get_right_movement_error()
+        if right_error and not self._prev_right_movement_error:
+            self.send_event_to_app("hardware_error", {
+                "error_code": "right_movement_error",
+                "message": "Ошибка движения каретки вправо"
+            })
+        self._prev_right_movement_error = right_error
+
     def parse_command(self, message: str) -> tuple:
         """
         Парсить команду от клиента (JSON или строка).
@@ -404,6 +519,11 @@ class Application:
                 try:
                     data = json.loads(response)
                     if "photo_base64" in data:
+                        # Сохраняем фото в файл
+                        photo_path = self._save_photo(data["photo_base64"])
+                        if photo_path:
+                            data["photo_path"] = str(photo_path)
+                            logger.info(f"Фото сохранено: {photo_path}")
                         self.send_event_to_app("photo_ready", data)
                         return
                     elif "error" in data:
@@ -465,6 +585,34 @@ class Application:
         logger.debug(f"Заглушка команды: {command_name}")
         self.send_event_to_app(f"{command_name}_ack", {"status": "not_implemented"})
 
+    def _save_photo(self, photo_base64: str) -> Path:
+        """
+        Сохранить фото из base64 строки в файл.
+
+        Args:
+            photo_base64: Base64 строка с изображением.
+
+        Returns:
+            Path к сохранённому файлу или None в случае ошибки.
+        """
+        try:
+            # Декодируем base64
+            image_data = base64.b64decode(photo_base64)
+            
+            # Генерируем имя файла на основе timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # миллисекунды
+            filename = f"photo_{timestamp}.jpg"
+            file_path = self.photos_dir / filename
+            
+            # Сохраняем файл
+            with open(file_path, 'wb') as f:
+                f.write(image_data)
+            
+            return file_path
+        except Exception as e:
+            logger.error(f"Ошибка сохранения фото: {e}")
+            return None
+
     # === ОБРАБОТЧИКИ VISION И ERROR ===
 
     def _handle_vision_response(self, vision_response: str):
@@ -505,6 +653,9 @@ class Application:
         if self.current_plc_detection == "bottle" and vision_response == "bottle":
             logger.info("Vision: подтверждено бутылка → PLC cmd")
             self.PLC.cmd_radxa_detected_bottle()
+            # Устанавливаем флаг начала движения каретки
+            self.carriage_moving_bottle = True
+            self.carriage_moving_start_time = time.time()
             # Событие: контейнер распознан
             self.send_event_to_app("container_recognized", {
                 "type": "PET",
@@ -513,6 +664,9 @@ class Application:
         elif self.current_plc_detection == "bank" and vision_response == "bank":
             logger.info("Vision: подтверждено банка → PLC cmd")
             self.PLC.cmd_radxa_detected_bank()
+            # Устанавливаем флаг начала движения каретки
+            self.carriage_moving_bank = True
+            self.carriage_moving_start_time = time.time()
             # Событие: контейнер распознан
             self.send_event_to_app("container_recognized", {
                 "type": "ALUMINUM",
