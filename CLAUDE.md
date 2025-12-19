@@ -42,7 +42,8 @@ pip install -r requirements.txt
 │                    (ws://localhost:8765)                     │
 ├─────────────────────────────────────────────────────────────┤
 │                      Application.py                          │
-│  ├── State Machine (IDLE/DUMPING_PLASTIC/DUMPING_ALUMINUM)  │
+│  ├── State Machine (5 состояний)                            │
+│  ├── Event Manager (события → app клиент)                   │
 │  └── PLC Interface (Modbus RTU @ /dev/ttyUSB0)              │
 └─────────────────────────────────────────────────────────────┘
            ▲                              ▲
@@ -51,23 +52,81 @@ pip install -r requirements.txt
            ▼                              ▼
 ┌─────────────────────┐        ┌─────────────────────┐
 │ inference_service.py│        │   Backend Service   │
-│  ├── CameraManager  │        │     (будущий)       │
+│  ├── CameraManager  │        │  backend_simulator  │
 │  └── InferenceEngine│        │                     │
 └─────────────────────┘        └─────────────────────┘
 ```
+
+### State Machine
+
+```
+IDLE ──(завеса освободилась + контейнер)──► WAITING_VISION
+  ▲                                              │
+  │                                    (ответ от vision)
+  │                                              ▼
+  │◄────────────────────────────────── DUMPING_PLASTIC (PET)
+  │                                              │
+  │◄────────────────────────────────── DUMPING_ALUMINUM (CAN)
+  │                                              │
+  │                                          (таймаут)
+  │                                              ▼
+  └───────(cmd_restore_device)─────────────── ERROR
+```
+
+**Состояния:**
+- `IDLE` — ожидание контейнера
+- `WAITING_VISION` — ожидание ответа от vision (таймаут 2с)
+- `DUMPING_PLASTIC` — движение каретки влево (PET)
+- `DUMPING_ALUMINUM` — движение каретки вправо (CAN)
+- `ERROR` — аппаратная ошибка, ограниченный набор команд
+
+### Event система
+
+События отправляются клиенту `app` в формате JSON:
+```json
+{
+  "event": "container_detected",
+  "data": {"plc_type": "bottle"},
+  "timestamp": "2025-12-19T10:30:00.123456"
+}
+```
+
+**События:**
+- `container_detected` — контейнер обнаружен (data: plc_type)
+- `container_recognized` — контейнер распознан (data: type, confidence)
+- `container_not_recognized` — не удалось распознать
+- `container_accepted` — контейнер принят (data: type, counter)
+- `hardware_error` — аппаратная ошибка (data: error_code, message)
+- `device_info` — информация об устройстве
+- `photo_ready` — фото готово (data: filename)
 
 ### WebSocket протокол
 
 **Клиент "vision" (inference_service):**
 - Регистрация: отправляет `"vision"` при подключении
-- Запрос: `"bottle_exist"` / `"bank_exist"` / `"none"`
+- Запрос от сервера: `"bottle_exist"` / `"bank_exist"` / `"none"`
 - Ответ: `"bottle"` / `"bank"` / `"none"`
+- Мульти-инференс: 3 кадра с голосованием по большинству
 
-**Клиент "app" (backend, будущий):**
+**Клиент "app" (backend):**
 - Регистрация: отправляет `"app"` при подключении
-- Команды: `"dump_container:plastic"`, `"dump_container:aluminium"`, `"cmd_full_clear_register"`, etc.
+- Команды в JSON формате:
+```json
+{"command": "dump_container", "param": "plastic"}
+{"command": "get_device_info"}
+{"command": "get_photo"}
+```
+- Поддерживается legacy формат: `"dump_container:plastic"`
 - `get_command()` — одноразовое чтение (очищается после)
 - `get_state()` — непрерывное чтение состояния
+
+**Команды app клиента:**
+- `get_device_info` — получить информацию об устройстве
+- `get_photo` — сделать фото с камеры
+- `dump_container` — сбросить контейнер (param: plastic/aluminium)
+- `container_unloaded` — мешок выгружен (param: plastic/aluminium)
+- `cmd_restore_device` — восстановить из ERROR
+- `cmd_full_clear_register` — очистить регистр команд
 
 ### Key Files
 - `Application.py` — сервис ПЛК, state machine, WebSocket сервер
@@ -173,8 +232,26 @@ pytest tests/ -v
 - `DONE.md` — выполненные задачи
 - `PLANS.md` — планы развития
 
+## Tests
+
+```bash
+pytest tests/ -v
+```
+
+**Структура тестов:**
+- `tests/test_application.py` — unit-тесты state machine и команд (40 тестов)
+- `tests/test_plc.py` — тесты PLC интерфейса
+- `tests/conftest.py` — pytest фикстуры и моки
+
+**Покрытие:**
+- State machine переходы
+- Обработчики команд
+- Vision response handlers
+- Event создание и отправка
+
 ## Legacy Files (не используются в основном потоке)
 
 - `interference.py` — альтернативная реализация инференса
 - `InferenceClient.py` — старый TCP клиент (заменён на WebSocket)
 - `Application copy.py` — бэкап
+- `backend_simulator.py` — симулятор для тестирования WebSocket API
