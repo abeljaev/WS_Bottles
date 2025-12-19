@@ -34,6 +34,11 @@ from websockets.exceptions import ConnectionClosed
 from camera_manager import CameraManager
 from config import Settings, get_settings
 from inference_engine import InferenceEngine
+from logging_config import get_logger, setup_logging
+
+# Инициализация логирования
+setup_logging()
+logger = get_logger(__name__)
 
 
 class InferenceClient:
@@ -67,7 +72,7 @@ class InferenceClient:
         Returns:
             True если инициализация успешна.
         """
-        print("[InferenceClient] Инициализация...")
+        logger.info("Инициализация...")
 
         if not self._engine.load_model():
             return False
@@ -79,13 +84,13 @@ class InferenceClient:
         if self._settings.save_frames:
             self._settings.output_dir.mkdir(parents=True, exist_ok=True)
 
-        print("[InferenceClient] Инициализация завершена")
+        logger.info("Инициализация завершена")
         return True
 
     async def start(self) -> None:
         """Запустить WebSocket клиент с автоматическим переподключением."""
         if not self._engine.is_ready():
-            print("[InferenceClient] Ошибка: модель не готова")
+            logger.error("Модель не готова")
             return
 
         uri = f"ws://{self._settings.websocket_host}:{self._settings.websocket_port}"
@@ -93,14 +98,14 @@ class InferenceClient:
 
         while self._running:
             try:
-                print(f"[InferenceClient] Подключение к {uri}...")
+                logger.info(f"Подключение к {uri}...")
                 async with websockets.connect(uri) as websocket:
                     self._websocket = websocket
-                    print("[InferenceClient] Подключено, отправка имени клиента 'vision'...")
-                    
+                    logger.debug("Подключено, отправка имени клиента 'vision'...")
+
                     # Отправляем имя клиента
                     await websocket.send("vision")
-                    print("[InferenceClient] Зарегистрирован как 'vision', ожидание запросов...")
+                    logger.info("Зарегистрирован как 'vision', ожидание запросов...")
 
                     # Открываем камеру и запускаем захват (с попыткой разных индексов)
                     if not self._camera.is_open():
@@ -108,30 +113,30 @@ class InferenceClient:
                         camera_idx_used = None
                         # Пробуем разные индексы камеры
                         for camera_idx in range(5):  # Пробуем индексы 0-4
-                            print(f"[InferenceClient] Попытка открыть камеру с индексом {camera_idx}...")
+                            logger.debug(f"Попытка открыть камеру с индексом {camera_idx}...")
                             if self._camera.open(camera_index=camera_idx):
                                 camera_opened = True
                                 camera_idx_used = camera_idx
                                 # Обновляем индекс в настройках для дальнейшего использования
                                 self._settings.camera_index = camera_idx
-                                print(f"[InferenceClient] Камера успешно открыта с индексом {camera_idx}")
+                                logger.info(f"Камера успешно открыта с индексом {camera_idx}")
                                 break
                             else:
                                 # Сбрасываем состояние камеры перед следующей попыткой
                                 self._camera.close()
-                        
+
                         if not camera_opened:
-                            print("[InferenceClient] Ошибка: не удалось открыть камеру ни с одним индексом (0-4)")
+                            logger.error("Не удалось открыть камеру ни с одним индексом (0-4)")
                             await asyncio.sleep(self._settings.websocket_reconnect_delay)
                             continue
 
                     if not self._camera.start_capture():
-                        print("[InferenceClient] Ошибка: не удалось запустить захват кадров")
+                        logger.error("Не удалось запустить захват кадров")
                         self._camera.close()
                         await asyncio.sleep(self._settings.websocket_reconnect_delay)
                         continue
 
-                    print("[InferenceClient] Камера открыта, захват запущен")
+                    logger.info("Камера открыта, захват запущен")
 
                     # Основной цикл обработки сообщений
                     while self._running:
@@ -150,16 +155,16 @@ class InferenceClient:
                             # Таймаут - это нормально, продолжаем слушать
                             continue
                         except ConnectionClosed:
-                            print("[InferenceClient] Соединение закрыто сервером")
+                            logger.warning("Соединение закрыто сервером")
                             break
                         except Exception as e:
-                            print(f"[InferenceClient] Ошибка обработки сообщения: {e}")
+                            logger.error(f"Ошибка обработки сообщения: {e}")
                             continue
 
             except ConnectionRefusedError:
-                print(f"[InferenceClient] Не удалось подключиться к {uri}, повтор через {self._settings.websocket_reconnect_delay} сек...")
+                logger.warning(f"Не удалось подключиться к {uri}, повтор через {self._settings.websocket_reconnect_delay} сек...")
             except Exception as e:
-                print(f"[InferenceClient] Ошибка подключения: {e}")
+                logger.error(f"Ошибка подключения: {e}")
             
             # Закрываем камеру при разрыве соединения
             self._camera.stop_capture()
@@ -188,7 +193,7 @@ class InferenceClient:
         Returns:
             Ответ клиенту или None если ответ не требуется.
         """
-        print(f"[InferenceClient] Получено сообщение: {message}")
+        logger.debug(f"Получено сообщение: {message}")
 
         # Попытка парсинга JSON команды
         try:
@@ -198,7 +203,7 @@ class InferenceClient:
             if command == "get_photo":
                 return await self._handle_get_photo()
 
-            print(f"[InferenceClient] Неизвестная JSON команда: {command}")
+            logger.warning(f"Неизвестная JSON команда: {command}")
             return json.dumps({"error": "unknown_command"})
 
         except json.JSONDecodeError:
@@ -213,7 +218,7 @@ class InferenceClient:
         if message in ("bottle_exist", "bank_exist"):
             return await self._handle_inference()
 
-        print(f"[InferenceClient] Неизвестное сообщение: {message}")
+        logger.debug(f"Неизвестное сообщение: {message}")
         return None
 
     async def _handle_inference(self) -> str:
@@ -224,7 +229,7 @@ class InferenceClient:
             "bottle", "bank" или "none".
         """
         if not self._camera.is_open():
-            print("[InferenceClient] Камера не открыта")
+            logger.warning("Камера не открыта")
             return "none"
 
         num_frames = 3
@@ -237,7 +242,7 @@ class InferenceClient:
             if frame is None:
                 frame = self._camera.capture_single_frame()
                 if frame is None:
-                    print(f"[InferenceClient] Не удалось получить кадр {i+1}/{num_frames}")
+                    logger.warning(f"Не удалось получить кадр {i+1}/{num_frames}")
                     continue
 
             # Сохраняем кадр если нужно
@@ -257,10 +262,10 @@ class InferenceClient:
 
             results.append(result)
             confidences.append(confidence)
-            print(f"[InferenceClient] Кадр {i+1}/{num_frames}: {class_name} ({confidence:.3f}) -> {result}")
+            logger.debug(f"Кадр {i+1}/{num_frames}: {class_name} ({confidence:.3f}) -> {result}")
 
         if not results:
-            print("[InferenceClient] Не удалось получить ни одного кадра")
+            logger.warning("Не удалось получить ни одного кадра")
             return "none"
 
         # Голосование по большинству
@@ -269,7 +274,7 @@ class InferenceClient:
         final_result, count = vote_counts.most_common(1)[0]
         avg_confidence = sum(confidences) / len(confidences)
 
-        print(f"[InferenceClient] Итог: {final_result} (голосов: {count}/{len(results)}, средняя уверенность: {avg_confidence:.3f})")
+        logger.info(f"Итог: {final_result} (голосов: {count}/{len(results)}, средняя уверенность: {avg_confidence:.3f})")
         return final_result
 
     async def _handle_get_photo(self) -> str:
@@ -282,7 +287,7 @@ class InferenceClient:
             JSON с photo_base64 или error.
         """
         if not self._camera.is_open():
-            print("[InferenceClient] Камера не открыта")
+            logger.warning("Камера не открыта")
             return json.dumps({"error": "camera_unavailable"})
 
         # Получаем кадр
@@ -290,7 +295,7 @@ class InferenceClient:
         if frame is None:
             frame = self._camera.capture_single_frame()
             if frame is None:
-                print("[InferenceClient] Не удалось получить кадр для get_photo")
+                logger.warning("Не удалось получить кадр для get_photo")
                 return json.dumps({"error": "frame_capture_failed"})
 
         # Сохраняем фото в папку для тестирования
@@ -307,7 +312,7 @@ class InferenceClient:
                 "saved_path": str(saved_path) if saved_path else None
             })
         except Exception as e:
-            print(f"[InferenceClient] Ошибка кодирования кадра: {e}")
+            logger.error(f"Ошибка кодирования кадра: {e}")
             return json.dumps({"error": "encoding_failed"})
 
     def _save_frame(self, frame, suffix: str = "") -> Path:
@@ -326,17 +331,17 @@ class InferenceClient:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = self._settings.output_dir / f"{timestamp}{suffix}.jpg"
             cv2.imwrite(str(filename), frame)
-            print(f"[InferenceClient] Сохранено: {filename}")
+            logger.debug(f"Сохранено: {filename}")
             return filename
         except Exception as e:
-            print(f"[InferenceClient] Ошибка сохранения кадра: {e}")
+            logger.error(f"Ошибка сохранения кадра: {e}")
             return None
 
     def _cleanup(self) -> None:
         """Освободить ресурсы."""
         self._camera.stop_capture()
         self._camera.close()
-        print("[InferenceClient] Остановлен")
+        logger.info("Остановлен")
 
 
 def run_interactive_camera(settings: Settings) -> None:
@@ -350,20 +355,20 @@ def run_interactive_camera(settings: Settings) -> None:
     camera = CameraManager(settings)
 
     if not engine.load_model():
-        print("Не удалось загрузить модель")
+        logger.error("Не удалось загрузить модель")
         return
 
     if not engine.warmup():
-        print("Не удалось прогреть модель")
+        logger.error("Не удалось прогреть модель")
         return
 
     if not camera.open():
-        print("Не удалось открыть камеру")
+        logger.error("Не удалось открыть камеру")
         return
 
     settings.output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("\nИнтерактивный режим камеры")
+    logger.info("Интерактивный режим камеры")
     print("Команды: c - захват и инференс, q - выход")
     print("-" * 40)
 
@@ -376,22 +381,22 @@ def run_interactive_camera(settings: Settings) -> None:
             elif cmd == "c":
                 frame = camera.capture_single_frame()
                 if frame is None:
-                    print("Не удалось захватить кадр")
+                    logger.warning("Не удалось захватить кадр")
                     continue
 
                 class_name, confidence = engine.predict(frame)
-                print(f"Результат: {class_name} ({confidence:.3f})")
+                logger.info(f"Результат: {class_name} ({confidence:.3f})")
 
                 # Сохраняем кадр
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = settings.output_dir / f"{timestamp}_{class_name}.jpg"
                 cv2.imwrite(str(filename), frame)
-                print(f"Сохранено: {filename}")
+                logger.debug(f"Сохранено: {filename}")
             else:
                 print("Неизвестная команда. Используйте 'c' или 'q'")
 
     except KeyboardInterrupt:
-        print("\nПрервано")
+        logger.info("Прервано")
     finally:
         camera.close()
 
@@ -438,7 +443,7 @@ def main():
             try:
                 asyncio.run(client.start())
             except KeyboardInterrupt:
-                print("\nПрервано пользователем")
+                logger.info("Прервано пользователем")
                 client.stop()
 
 

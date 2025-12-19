@@ -146,9 +146,16 @@ IDLE → WAITING_VISION → DUMPING_PLASTIC → IDLE
 9. При таймауте → переход в ERROR
 ```
 
+## Камера
+
+- **Разрешение:** 2K (2560×1440)
+- Камера работает в максимальном разрешении
+- Кадр ресайзится до 1280×1280 перед инференсом
+
 ## Модель
 
-- **Архитектура:** YOLO11n classification
-- **Вход:** 1024×1024 RGB
+- **Архитектура:** YOLO11s classification
+- **Вход:** 1280×1280 RGB
 - **Классы:** CAN (0), FOREIGN (1), PET (2)
-- **Платформа:** RKNN (Rockchip NPU)
+- **Платформа:** RKNN (Rockchip NPU RK3588)
+- **Веса:** `weights/best_11s_rknn_model/` (папка с RKNN моделью)

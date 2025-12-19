@@ -153,19 +153,27 @@ SAVE_FRAMES=true
 OUTPUT_DIR=real_time
 ```
 
+## Camera
+
+**Разрешение:** 2K (2560x1440)
+- Камера работает в максимальном разрешении для качественного захвата
+- Кадр ресайзится до 1280x1280 перед инференсом
+
 ## Model
 
-**Фреймворк:** Ultralytics YOLO11 (classification)
+**Фреймворк:** Ultralytics YOLO11s (classification)
 
-**Production (RKNN):** `best_rknn_model/`
-- Конвертирована для Rockchip NPU
+**Production (RKNN):** `weights/best_11s_rknn_model/`
+- Папка с RKNN моделью для Rockchip NPU (RK3588)
+- Содержит: `best_11s_cls_1280-rk3588.rknn` + `metadata.yaml`
+- **Важно:** Ultralytics требует путь к папке, не к файлу .rknn
 
 **Development (PyTorch):** `weights/best_11s.pt`
 - Ultralytics YOLO11s для тестирования без NPU
 - Использовать: `MODEL_PATH=weights/best_11s.pt`
 
 **Параметры:**
-- Input: 1024x1024 RGB
+- Input: 1280x1280 RGB
 - Classes: CAN (0), FOREIGN (1), PET (2)
 - Mapping: PET→"bottle", CAN→"bank", FOREIGN→"none"
 

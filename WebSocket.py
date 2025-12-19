@@ -4,6 +4,9 @@ from typing import Set
 import threading
 import signal
 import time
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 command_list = {
     #команды
@@ -66,7 +69,7 @@ class WebSocket:
         
     async def _handler(self, websocket):
         client_name = None
-        print(f"[WebSocket] Новое подключение. Всего клиентов: {len(self.clients)}")
+        logger.debug(f"Новое подключение. Всего клиентов: {len(self.clients)}")
         
         try:
             # Первое сообщение - это имя клиента
@@ -81,7 +84,7 @@ class WebSocket:
                     "timestamp": time.time()
                 }
             
-            print(f"[WebSocket] Клиент зарегистрирован: '{client_name}'. Всего: {len(self.clients)}")
+            logger.info(f"Клиент зарегистрирован: '{client_name}'. Всего: {len(self.clients)}")
             
             # Дальше обрабатываем обычные сообщения
             while True:
@@ -100,7 +103,7 @@ class WebSocket:
                     self.message_app = message
                 
         except websockets.exceptions.ConnectionClosed:
-            print(f"[WebSocket] Соединение закрыто ({client_name})")
+            logger.debug(f"Соединение закрыто ({client_name})")
         finally:
             if client_name:
                 with self._clients_lock:
@@ -111,7 +114,7 @@ class WebSocket:
                         del self.client_messages[client_name]
             with self._clients_lock:
                 remaining = len(self.clients)
-            print(f"[WebSocket] Клиент отключен ({client_name}). Осталось: {remaining}")
+            logger.info(f"Клиент отключен ({client_name}). Осталось: {remaining}")
 
 
 
@@ -123,7 +126,7 @@ class WebSocket:
             self.host,
             self.port
         )
-        print(f"[WebSocket] Сервер запущен на ws://{self.host}:{self.port}")
+        logger.info(f"Сервер запущен на ws://{self.host}:{self.port}")
         
         # Бесконечный цикл
         self._running = True
@@ -137,12 +140,12 @@ class WebSocket:
     
     def start(self):
         if self._thread and self._thread.is_alive():
-            print("[WebSocket] Сервер уже запущен")
+            logger.warning("Сервер уже запущен")
             return
         
         self._thread = threading.Thread(target=self._run_in_thread, daemon=True)
         self._thread.start()
-        print("[WebSocket] Сервер запускается в фоновом потоке...")
+        logger.debug("Сервер запускается в фоновом потоке...")
     
     def stop(self):
         self._running = False
@@ -152,7 +155,7 @@ class WebSocket:
         
         if self._thread:
             self._thread.join(timeout=2)
-            print("[WebSocket] Сервер остановлен")
+            logger.info("Сервер остановлен")
     
     async def _stop_async(self):
         if self.server:
@@ -170,9 +173,9 @@ class WebSocket:
             try:
                 await websocket.send(message)
             except Exception as e:
-                print(f"[WebSocket] Ошибка отправки клиенту {client_name}: {e}")
+                logger.error(f"Ошибка отправки клиенту {client_name}: {e}")
         else:
-            print(f"[WebSocket] Клиент {client_name} не найден")
+            logger.debug(f"Клиент {client_name} не найден")
     
     def send_to_client(self, client_name: str, message: str):
         """Отправить сообщение конкретному клиенту (из синхронного кода)"""

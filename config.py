@@ -41,14 +41,14 @@ def _get_env_float(key: str, default: float) -> float:
 class Settings:
     """Настройки inference сервиса."""
 
-    # Модель
-    model_path: Path = field(default_factory=lambda: Path("/home/radxa/Documents/CODE/BottleClassifier/best_rknn_model"))
+    # Модель (папка RKNN модели для Ultralytics)
+    model_path: Path = field(default_factory=lambda: Path("weights/best_11s_rknn_model"))
     image_size: int = 1280
     warmup_runs: int = 2
 
-    # Камера
+    # Камера (2K разрешение)
     camera_index: int = 0
-    camera_width: int = 2048
+    camera_width: int = 2560
     camera_height: int = 1440
     camera_fps: int = 30
     camera_fourcc: str = "MJPG"
@@ -94,15 +94,15 @@ class Settings:
             # Модель
             model_path=_get_env_path(
                 "MODEL_PATH",
-                "/home/radxa/Documents/CODE/BottleClassifier/best_rknn_model"
+                "weights/best_11s_rknn_model"
             ),
-            image_size=_get_env_int("IMAGE_SIZE", 1024),
+            image_size=_get_env_int("IMAGE_SIZE", 1280),
             warmup_runs=_get_env_int("WARMUP_RUNS", 2),
 
-            # Камера
+            # Камера (2K разрешение)
             camera_index=_get_env_int("CAMERA_INDEX", 0),
-            camera_width=_get_env_int("CAMERA_WIDTH", 1920),
-            camera_height=_get_env_int("CAMERA_HEIGHT", 1080),
+            camera_width=_get_env_int("CAMERA_WIDTH", 2560),
+            camera_height=_get_env_int("CAMERA_HEIGHT", 1440),
             camera_fps=_get_env_int("CAMERA_FPS", 30),
             camera_fourcc=os.getenv("CAMERA_FOURCC", "MJPG"),
 

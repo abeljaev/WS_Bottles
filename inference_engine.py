@@ -13,6 +13,9 @@ from typing import Optional
 import numpy as np
 
 from config import Settings
+from logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class InferenceEngine:
@@ -58,20 +61,20 @@ class InferenceEngine:
 
             model_path = self._settings.model_path
             if not Path(model_path).exists():
-                print(f"[InferenceEngine] Модель не найдена: {model_path}")
+                logger.error(f"Модель не найдена: {model_path}")
                 return False
 
-            print(f"[InferenceEngine] Загрузка модели из {model_path}...")
+            logger.info(f"Загрузка модели из {model_path}...")
             start = time.perf_counter()
 
             self._model = YOLO(str(model_path), task="classify")
 
             elapsed = time.perf_counter() - start
-            print(f"[InferenceEngine] Модель загружена за {elapsed:.2f} сек")
+            logger.info(f"Модель загружена за {elapsed:.2f} сек")
             return True
 
         except Exception as e:
-            print(f"[InferenceEngine] Ошибка загрузки модели: {e}")
+            logger.error(f"Ошибка загрузки модели: {e}")
             return False
 
     def warmup(self, runs: Optional[int] = None) -> bool:
@@ -85,7 +88,7 @@ class InferenceEngine:
             True если прогрев успешен.
         """
         if self._model is None:
-            print("[InferenceEngine] Невозможно прогреть: модель не загружена")
+            logger.error("Невозможно прогреть: модель не загружена")
             return False
 
         warmup_runs = runs if runs is not None else self._settings.warmup_runs
@@ -93,7 +96,7 @@ class InferenceEngine:
             self._is_ready = True
             return True
 
-        print(f"[InferenceEngine] Прогрев модели ({warmup_runs} запусков)...")
+        logger.info(f"Прогрев модели ({warmup_runs} запусков)...")
         imgsz = self._settings.image_size
 
         try:
@@ -105,14 +108,14 @@ class InferenceEngine:
                 self._model.predict(source=dummy, imgsz=imgsz, verbose=False)
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
-                print(f"[InferenceEngine]   Прогрев #{i}: {elapsed_ms:.1f} мс")
+                logger.debug(f"Прогрев #{i}: {elapsed_ms:.1f} мс")
 
             self._is_ready = True
-            print("[InferenceEngine] Прогрев завершён, модель готова")
+            logger.info("Прогрев завершён, модель готова")
             return True
 
         except Exception as e:
-            print(f"[InferenceEngine] Ошибка при прогреве: {e}")
+            logger.error(f"Ошибка при прогреве: {e}")
             return False
 
     def predict(self, frame: np.ndarray) -> tuple[str, float]:
@@ -128,7 +131,7 @@ class InferenceEngine:
             - confidence: уверенность предсказания (0.0 - 1.0)
         """
         if not self._is_ready or self._model is None:
-            print("[InferenceEngine] Модель не готова к инференсу")
+            logger.warning("Модель не готова к инференсу")
             return "NONE", 0.0
 
         try:
@@ -143,7 +146,7 @@ class InferenceEngine:
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             if not results:
-                print("[InferenceEngine] Пустой результат предсказания")
+                logger.warning("Пустой результат предсказания")
                 return "NONE", 0.0
 
             result = results[0]
@@ -153,11 +156,11 @@ class InferenceEngine:
             # Маппинг на выходные значения
             class_name = self.CLASS_MAPPING.get(raw_class_name.upper(), "NONE")
 
-            print(f"[InferenceEngine] Предсказание: {class_name} ({confidence:.3f}) за {elapsed_ms:.1f} мс")
+            logger.debug(f"Предсказание: {class_name} ({confidence:.3f}) за {elapsed_ms:.1f} мс")
             return class_name, confidence
 
         except Exception as e:
-            print(f"[InferenceEngine] Ошибка при предсказании: {e}")
+            logger.error(f"Ошибка при предсказании: {e}")
             return "NONE", 0.0
 
     def is_ready(self) -> bool:
