@@ -81,6 +81,9 @@ class Application:
         self._prev_left_movement_error = False # Предыдущее состояние ошибки движения влево
         self._prev_right_movement_error = False # Предыдущее состояние ошибки движения вправо
 
+        # Защита от повторного инференса для одного контейнера
+        self._inference_requested = False      # Флаг: инференс уже запрошен для текущего контейнера
+
         # Command Registry: команда → (handler, требует_param)
         self._command_handlers = {
             "get_photo": (self.handle_get_photo, False),
@@ -244,38 +247,44 @@ class Application:
                     bank_exist = self.PLC.get_bank_exist()
                     container_detected = bottle_exist == 1 or bank_exist == 1
 
+                    # Сброс флага инференса когда контейнер убран из приёмника
+                    if not container_detected:
+                        self._inference_requested = False
+
                     # Детект перехода завесы: пересечена → свободна (рука убрана)
-                    if self.prev_veil_state == 1 and current_veil == 0:
+                    # Запуск инференса СРАЗУ при освобождении завесы (параллельно с ПЛК)
+                    if self.prev_veil_state == 1 and current_veil == 0 and not self._inference_requested:
                         self.veil_just_cleared = True
                         self.veil_cleared_time = time.time()
-                        logger.debug("Завеса освободилась, ждём контейнер...")
+                        self._inference_requested = True  # Помечаем что инференс запрошен
 
-                    # Сброс флага если завеса снова пересечена
-                    if current_veil == 1:
-                        self.veil_just_cleared = False
-                        self.veil_cleared_time = None
+                        logger.info("Завеса освободилась → WAITING_VISION (инференс запущен)")
+                        self.vision_request_time = time.time()
 
-                    # Запуск инференса: завеса была освобождена + контейнер появился
-                    if self.veil_just_cleared or container_detected:
-                        # Определяем тип контейнера по ПЛК
+                        # Определяем тип контейнера по ПЛК (если уже есть) или используем bottle_exist по умолчанию
                         if self.PLC.get_bottle_exist() == 1:
                             self.current_plc_detection = "bottle"
                             vision_cmd = "bottle_exist"
-                        else:
+                        elif self.PLC.get_bank_exist() == 1:
                             self.current_plc_detection = "bank"
                             vision_cmd = "bank_exist"
-
-                        logger.info(f"Контейнер обнаружен → WAITING_VISION ({self.current_plc_detection})")
-                        self.vision_request_time = time.time()
-                        self.veil_just_cleared = False  # Сброс флага
+                        else:
+                            # ПЛК ещё не определил тип - запускаем инференс всё равно
+                            self.current_plc_detection = None
+                            vision_cmd = "bottle_exist"  # Команда для запуска инференса
 
                         # Событие: контейнер обнаружен
-                        self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection})
+                        self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection or "unknown"})
                         # Сброс старых ответов vision перед новым запросом
                         self.websocket_server.get_command("vision")
                         self.websocket_server.send_to_client("vision", vision_cmd)
                         with self.state_lock:
                             self.state = AppState.WAITING_VISION
+
+                    # Сброс флага если завеса снова пересечена
+                    if current_veil == 1:
+                        self.veil_just_cleared = False
+                        self.veil_cleared_time = None
 
                     self.prev_veil_state = current_veil
 
