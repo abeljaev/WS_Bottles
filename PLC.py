@@ -31,7 +31,7 @@ class PLC:
         self.modbus_register_cmd = ModbusRegister(self.slave, self.cmd_register)
         self.modbus_register_status = ModbusRegister(self.slave, self.status_register)
         self.modbus_register_speed = ModbusRegister(self.slave, 24)
-        self.modbus_register_counter = ModbusRegister(self.slave, 25)
+        # self.modbus_register_counter = ModbusRegister(self.slave, 25)
 
         # Счетчики и проценты заполнения
         self.modbus_register_bank_counter = ModbusRegister(self.slave, 20)
@@ -54,7 +54,7 @@ class PLC:
         """Синхронизировать данные с устройства (потокобезопасно)."""
         with self._modbus_lock:
             self.modbus_register_status.sync_from_device()
-            self.modbus_register_counter.sync_from_device()
+            # self.modbus_register_counter.sync_from_device()
             self.modbus_register_bank_counter.sync_from_device()
             self.modbus_register_bottle_counter.sync_from_device()
             self.modbus_register_bottle_percent.sync_from_device()
@@ -152,6 +152,14 @@ class PLC:
     def cmd_radxa_detected_bottle(self):
         with self._modbus_lock:
             self.modbus_register_cmd.set_bit(7, 1)
+
+    def cmd_radxa_stop_detected_bank(self):
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(6, 0)
+
+    def cmd_radxa_stop_detected_bottle(self):
+        with self._modbus_lock:
+            self.modbus_register_cmd.set_bit(7, 0)
 
     def cmd_reset_weight_reading(self):
         with self._modbus_lock:

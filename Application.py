@@ -83,6 +83,7 @@ class Application:
 
         # Защита от повторного инференса для одного контейнера
         self._inference_requested = False      # Флаг: инференс уже запрошен для текущего контейнера
+        self._pending_vision_response = None   # Ответ vision, ожидающий ответа ПЛК
 
         # Command Registry: команда → (handler, требует_param)
         self._command_handlers = {
@@ -199,38 +200,56 @@ class Application:
                         self.carriage_moving_start_time = None
 
                 if self.state == AppState.WAITING_VISION:
-                    # Ждем ответа от vision (одноразовое чтение)
+                    # Получаем ответ от vision (одноразовое чтение)
                     vision_response = self.websocket_server.get_command("vision")
 
-                    if vision_response and vision_response != "":
-                        # Получен ответ от vision
+                    # Сохраняем ответ vision, если получен
+                    if vision_response and vision_response != "" and self._pending_vision_response is None:
                         logger.info(f"Vision ответил: {vision_response}")
-                        
+                        self._pending_vision_response = vision_response
+
                         # Вычисляем дельту времени между veil_just_cleared и ответом от vision
                         if self.veil_cleared_time is not None:
                             delta_ms = (time.time() - self.veil_cleared_time) * 1000
                             print(f"[TIMING] Дельта: {delta_ms:.2f} мс (veil_cleared → vision_response)")
                             self.veil_cleared_time = None
-                        
-                        self._handle_vision_response_with_events(vision_response)
+
+                    # Обновляем current_plc_detection из ПЛК если ещё не определён
+                    if self.current_plc_detection is None:
+                        if self.PLC.get_bottle_exist() == 1:
+                            self.current_plc_detection = "bottle"
+                            logger.info("ПЛК определил: bottle")
+                        elif self.PLC.get_bank_exist() == 1:
+                            self.current_plc_detection = "bank"
+                            logger.info("ПЛК определил: bank")
+
+                    # Проверяем готовность обоих результатов
+                    if self._pending_vision_response is not None and self.current_plc_detection is not None:
+                        # Оба готовы - принимаем решение
+                        self._handle_vision_response_with_events(self._pending_vision_response)
                         with self.state_lock:
                             self.state = AppState.IDLE
                         self.vision_request_time = None
                         self.current_plc_detection = None
+                        self._pending_vision_response = None
                     elif time.time() - self.vision_request_time > self.vision_timeout:
-                        # Таймаут ожидания vision
-                        logger.warning("ТАЙМАУТ ожидания vision → IDLE")
-                        
+                        # Таймаут ожидания
+                        if self._pending_vision_response is None:
+                            logger.warning("ТАЙМАУТ ожидания vision → IDLE")
+                        else:
+                            logger.warning("ТАЙМАУТ ожидания ПЛК → IDLE")
+
                         # Вычисляем дельту времени даже при таймауте
                         if self.veil_cleared_time is not None:
                             delta_ms = (time.time() - self.veil_cleared_time) * 1000
-                            print(f"[TIMING] Дельта (таймаут): {delta_ms:.2f} мс (veil_cleared → vision_timeout)")
+                            print(f"[TIMING] Дельта (таймаут): {delta_ms:.2f} мс (veil_cleared → timeout)")
                             self.veil_cleared_time = None
-                        
+
                         with self.state_lock:
                             self.state = AppState.IDLE
                         self.vision_request_time = None
                         self.current_plc_detection = None
+                        self._pending_vision_response = None
                         # Событие: контейнер не распознан
                         self.send_event_to_app("container_not_recognized", {})
 
@@ -660,7 +679,7 @@ class Application:
 
         # Проверяем совпадение с детектом ПЛК
         if self.current_plc_detection == "bottle" and vision_response == "bottle":
-            logger.info("Vision: подтверждено бутылка → PLC cmd")
+            logger.info("Vision: бутылка → PLC cmd")
             self.PLC.cmd_radxa_detected_bottle()
             # Устанавливаем флаг начала движения каретки
             self.carriage_moving_bottle = True
@@ -671,7 +690,7 @@ class Application:
                 "confidence": 1.0  # TODO: получать от vision
             })
         elif self.current_plc_detection == "bank" and vision_response == "bank":
-            logger.info("Vision: подтверждено банка → PLC cmd")
+            logger.info("Vision: банка → PLC cmd")
             self.PLC.cmd_radxa_detected_bank()
             # Устанавливаем флаг начала движения каретки
             self.carriage_moving_bank = True
@@ -684,7 +703,7 @@ class Application:
         else:
             logger.warning(f"Vision: несовпадение! ПЛК: {self.current_plc_detection}, Vision: {vision_response}")
             # Событие: несовпадение детекта
-            self.send_event_to_app("receiver_not_empty", {
+            self.send_event_to_app("container_not_recognized", {
                 "plc_type": self.current_plc_detection,
                 "vision_type": vision_response
             })

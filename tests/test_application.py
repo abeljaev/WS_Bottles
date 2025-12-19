@@ -509,8 +509,8 @@ class TestVisionResponseWithEvents:
         event = json.loads(event_json)
         assert event["event"] == "container_not_recognized"
 
-    def test_mismatch_sends_receiver_not_empty(self, app_with_mocks):
-        """Проверить отправку события receiver_not_empty при несовпадении."""
+    def test_mismatch_sends_container_not_recognized(self, app_with_mocks):
+        """Проверить отправку события container_not_recognized при несовпадении."""
         import json
         app = app_with_mocks
         app.current_plc_detection = "bottle"
@@ -525,6 +525,6 @@ class TestVisionResponseWithEvents:
         call_args = app.websocket_server.send_to_client.call_args
         event_json = call_args[0][1]
         event = json.loads(event_json)
-        assert event["event"] == "receiver_not_empty"
+        assert event["event"] == "container_not_recognized"
         assert event["data"]["plc_type"] == "bottle"
         assert event["data"]["vision_type"] == "bank"

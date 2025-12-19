@@ -228,11 +228,14 @@ class InferenceClient:
         Returns:
             "bottle", "bank" или "none".
         """
+        # Фиксируем время начала распознавания
+       
+        
         if not self._camera.is_open():
             logger.warning("Камера не открыта")
             return "none"
 
-        num_frames = 3
+        num_frames = 1#3
         results = []
         confidences = []
 
@@ -250,7 +253,10 @@ class InferenceClient:
                 self._save_frame(frame, suffix=f"_inf{i+1}")
 
             # Выполняем инференс
+            inference_start_time = time.time()
             class_name, confidence = self._engine.predict(frame)
+            inference_delta_ms = (time.time() - inference_start_time) * 1000
+            print(f"[TIMING] Дельта распознавания: {inference_delta_ms:.2f}")
 
             # Маппим результат
             if class_name == "PET":
@@ -273,6 +279,9 @@ class InferenceClient:
         vote_counts = Counter(results)
         final_result, count = vote_counts.most_common(1)[0]
         avg_confidence = sum(confidences) / len(confidences)
+
+        # Вычисляем дельту времени между запросом и завершением распознавания
+        
 
         logger.info(f"Итог: {final_result} (голосов: {count}/{len(results)}, средняя уверенность: {avg_confidence:.3f})")
         return final_result

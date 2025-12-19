@@ -277,7 +277,7 @@ async def interactive_mode(simulator: BackendSimulator):
                 if event:
                     simulator._print_event(event)
             elif cmd == "8":
-                await simulator.listen_all_events(duration=5.0)
+                await simulator.listen_all_events(duration=60.0)
             elif cmd == "9":
                 simulator.show_event_history()
             elif cmd == "0":
