@@ -109,7 +109,7 @@ class Application:
                 time.sleep(self.update_data_period)
 
         except Exception as e:
-            pass
+            print(f"[PLC] Ошибка обновления данных: {e}", flush=True)
 
 
     def setup(self):
@@ -232,8 +232,8 @@ class Application:
                     bank_exist = self.PLC.get_bank_exist()
                     container_detected = bottle_exist == 1 or bank_exist == 1
 
-                    # DEBUG: показать состояние датчиков
-                    print(f"[DEBUG] veil={current_veil} prev={self.prev_veil_state} bottle={bottle_exist} bank={bank_exist} cleared={self.veil_just_cleared}", flush=True)
+                    # DEBUG: раскомментировать для отладки датчиков
+                    # print(f"[DEBUG] veil={current_veil} prev={self.prev_veil_state} bottle={bottle_exist} bank={bank_exist} cleared={self.veil_just_cleared}", flush=True)
 
                     # Детект перехода завесы: пересечена → свободна (рука убрана)
                     if self.prev_veil_state == 1 and current_veil == 0:
@@ -324,9 +324,9 @@ class Application:
                 
                 # print(self.PLC.status_register.get_value())
                 time.sleep(0.1)
-                
+
         except Exception as e:
-            pass
+            print(f"[App] Ошибка в главном цикле: {e}", flush=True)
 
     # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СОБЫТИЙ И КОМАНД ===
 

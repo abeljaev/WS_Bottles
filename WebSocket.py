@@ -49,6 +49,7 @@ class WebSocket:
         self.port = port
         self.PLC = PLC
         self.clients = {}  # Словарь: {"client_name": websocket}
+        self._clients_lock = threading.Lock()  # Lock для потокобезопасного доступа к clients
         self.server = None
         self.loop = None
         self._thread = None
@@ -70,8 +71,9 @@ class WebSocket:
         try:
             # Первое сообщение - это имя клиента
             client_name = await websocket.recv()
-            self.clients[client_name] = websocket
-            
+            with self._clients_lock:
+                self.clients[client_name] = websocket
+
             # Инициализируем хранилище для этого клиента
             with self.message_lock:
                 self.client_messages[client_name] = {
@@ -100,12 +102,16 @@ class WebSocket:
         except websockets.exceptions.ConnectionClosed:
             print(f"[WebSocket] Соединение закрыто ({client_name})")
         finally:
-            if client_name and client_name in self.clients:
-                del self.clients[client_name]
-            if client_name and client_name in self.client_messages:
+            if client_name:
+                with self._clients_lock:
+                    if client_name in self.clients:
+                        del self.clients[client_name]
                 with self.message_lock:
-                    del self.client_messages[client_name]
-            print(f"[WebSocket] Клиент отключен ({client_name}). Осталось: {len(self.clients)}")
+                    if client_name in self.client_messages:
+                        del self.client_messages[client_name]
+            with self._clients_lock:
+                remaining = len(self.clients)
+            print(f"[WebSocket] Клиент отключен ({client_name}). Осталось: {remaining}")
 
 
 
@@ -158,9 +164,11 @@ class WebSocket:
     
     async def send_to_client_async(self, client_name: str, message: str):
         """Отправить сообщение конкретному клиенту"""
-        if client_name in self.clients:
+        with self._clients_lock:
+            websocket = self.clients.get(client_name)
+        if websocket:
             try:
-                await self.clients[client_name].send(message)
+                await websocket.send(message)
             except Exception as e:
                 print(f"[WebSocket] Ошибка отправки клиенту {client_name}: {e}")
         else:
@@ -176,9 +184,11 @@ class WebSocket:
     
     async def broadcast_async(self, message: str):
         """Отправить сообщение всем клиентам"""
-        if self.clients:
+        with self._clients_lock:
+            clients_copy = list(self.clients.values())
+        if clients_copy:
             await asyncio.gather(
-                *[client.send(message) for client in self.clients.values()],
+                *[client.send(message) for client in clients_copy],
                 return_exceptions=True
             )
     
