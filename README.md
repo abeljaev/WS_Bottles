@@ -4,12 +4,42 @@
 
 ## Описание
 
-Система классификации контейнеров с помощью нейросети YOLO11n и управления сортировкой через ПЛК по Modbus RTU.
+Система классификации контейнеров с помощью нейросети YOLO11s и управления сортировкой через ПЛК по Modbus RTU.
 
 **Классы объектов:**
 - **PET** — пластиковые бутылки → сброс влево
 - **CAN** — алюминиевые банки → сброс вправо
 - **FOREIGN** — посторонний предмет → отклонение
+
+## Структура проекта
+
+```
+BottleClassifier/
+├── plc/                        # Модуль PLC + State Machine
+│   ├── application.py          # State Machine, WebSocket сервер
+│   ├── plc.py                  # Modbus RTU интерфейс
+│   └── modbus_register.py      # Абстракция регистра
+│
+├── vision/                     # Модуль Vision
+│   ├── inference_service.py    # WebSocket клиент для инференса
+│   ├── camera_manager.py       # Потокобезопасная камера
+│   └── inference_engine.py     # YOLO обёртка
+│
+├── websocket/                  # WebSocket сервер
+│   └── server.py               # Async сервер для клиентов
+│
+├── core/                       # Общие модули
+│   ├── config.py               # Settings из .env
+│   └── logging_config.py       # Настройка логирования
+│
+├── tools/                      # Утилиты
+│   ├── backend_simulator.py    # Симулятор backend
+│   └── terminal.py             # Интерактивный терминал
+│
+├── tests/                      # Тесты (pytest)
+├── docs/                       # Документация
+└── weights/                    # Веса моделей
+```
 
 ## Установка
 
@@ -29,7 +59,7 @@ pip install -r requirements.txt
 ### Переменные окружения
 Создайте файл `.env`:
 ```env
-MODEL_PATH=/path/to/best_rknn_model
+MODEL_PATH=/path/to/best_11s_rknn_model
 CAMERA_INDEX=0
 WEBSOCKET_HOST=localhost
 WEBSOCKET_PORT=8765
@@ -41,17 +71,22 @@ OUTPUT_DIR=real_time
 
 ### Сервис ПЛК (основной)
 ```bash
-python Application.py
+python -m plc.application
 ```
 
 ### Сервис инференса (отдельный процесс)
 ```bash
-python inference_service.py
+python -m vision.inference_service
 ```
 
 ### Интерактивный режим камеры (тестирование)
 ```bash
-python inference_service.py --camera
+python -m vision.inference_service --camera
+```
+
+### Симулятор backend (тестирование WebSocket API)
+```bash
+python -m tools.backend_simulator
 ```
 
 ## Архитектура
@@ -61,28 +96,28 @@ python inference_service.py --camera
 │                     WebSocket Server                         │
 │                    (ws://localhost:8765)                     │
 ├─────────────────────────────────────────────────────────────┤
-│                      Application.py                          │
-│  ├── State Machine (IDLE/DUMPING_PLASTIC/DUMPING_ALUMINUM)  │
+│                    plc/application.py                        │
+│  ├── State Machine (5 состояний)                            │
+│  ├── Event Manager (события → app клиент)                   │
 │  └── PLC Interface (Modbus RTU @ /dev/ttyUSB0)              │
 └─────────────────────────────────────────────────────────────┘
            ▲                              ▲
            │ WebSocket                    │ WebSocket
            │ (client: "vision")           │ (client: "app")
            ▼                              ▼
-┌─────────────────────┐        ┌─────────────────────┐
-│ inference_service.py│        │   Backend Service   │
-│  ├── CameraManager  │        │     (будущий)       │
-│  └── InferenceEngine│        │                     │
-└─────────────────────┘        └─────────────────────┘
+┌─────────────────────────┐    ┌─────────────────────────┐
+│ vision/inference_service│    │   Backend Service       │
+│  ├── CameraManager      │    │   (tools/backend_       │
+│  └── InferenceEngine    │    │    simulator.py)        │
+└─────────────────────────┘    └─────────────────────────┘
 ```
 
 ## Документация
 
 Подробная документация находится в папке [docs/](docs/):
+- [COMMANDS.md](docs/COMMANDS.md) — WebSocket API команды и события
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура системы
 - [BACKLOG.md](docs/BACKLOG.md) — запланированные задачи
-- [IN_PROGRESS.md](docs/IN_PROGRESS.md) — задачи в работе
-- [DONE.md](docs/DONE.md) — выполненные задачи
 
 ## Тестирование
 

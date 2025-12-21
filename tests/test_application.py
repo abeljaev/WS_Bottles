@@ -13,7 +13,7 @@ class TestAppStateEnum:
 
     def test_states_exist(self):
         """Проверить наличие всех состояний."""
-        from Application import AppState
+        from plc import AppState
 
         assert hasattr(AppState, 'IDLE')
         assert hasattr(AppState, 'WAITING_VISION')
@@ -23,7 +23,7 @@ class TestAppStateEnum:
 
     def test_state_values(self):
         """Проверить значения состояний."""
-        from Application import AppState
+        from plc import AppState
 
         assert AppState.IDLE.value == "idle"
         assert AppState.WAITING_VISION.value == "waiting_vision"
@@ -38,18 +38,18 @@ class TestApplicationInit:
     @pytest.fixture
     def mock_plc(self):
         """Mock для PLC."""
-        with patch('Application.PLC') as mock:
+        with patch('plc.application.PLC') as mock:
             yield mock
 
     @pytest.fixture
     def mock_websocket(self):
         """Mock для WebSocket."""
-        with patch('Application.WebSocket') as mock:
+        with patch('plc.application.WebSocket') as mock:
             yield mock
 
     def test_state_machine_fields_exist(self, mock_plc, mock_websocket):
         """Проверить наличие полей state machine."""
-        from Application import Application, AppState
+        from plc import Application, AppState
 
         app = Application(
             serial_port='/dev/ttyUSB0',
@@ -68,7 +68,7 @@ class TestApplicationInit:
 
     def test_initial_state_is_idle(self, mock_plc, mock_websocket):
         """Проверить начальное состояние IDLE."""
-        from Application import Application, AppState
+        from plc import Application, AppState
 
         app = Application(
             serial_port='/dev/ttyUSB0',
@@ -80,7 +80,7 @@ class TestApplicationInit:
 
     def test_timeout_values(self, mock_plc, mock_websocket):
         """Проверить значения таймаутов."""
-        from Application import Application
+        from plc import Application
 
         app = Application(
             serial_port='/dev/ttyUSB0',
@@ -98,9 +98,9 @@ class TestVisionResponseHandler:
     @pytest.fixture
     def app_with_mocks(self):
         """Application с замоканными зависимостями."""
-        with patch('Application.PLC') as mock_plc, \
-             patch('Application.WebSocket') as mock_ws:
-            from Application import Application
+        with patch('plc.application.PLC') as mock_plc, \
+             patch('plc.application.WebSocket') as mock_ws:
+            from plc import Application
 
             app = Application(
                 serial_port='/dev/ttyUSB0',
@@ -155,9 +155,9 @@ class TestErrorStateHandler:
     @pytest.fixture
     def app_in_error_state(self):
         """Application в состоянии ERROR."""
-        with patch('Application.PLC') as mock_plc, \
-             patch('Application.WebSocket') as mock_ws:
-            from Application import Application, AppState
+        with patch('plc.application.PLC') as mock_plc, \
+             patch('plc.application.WebSocket') as mock_ws:
+            from plc import Application, AppState
 
             app = Application(
                 serial_port='/dev/ttyUSB0',
@@ -171,7 +171,7 @@ class TestErrorStateHandler:
 
     def test_dump_plastic_in_error_state(self, app_in_error_state):
         """Проверить обработку dump_container:plastic в ERROR."""
-        from Application import AppState
+        from plc import AppState
 
         app = app_in_error_state
         app.websocket_server.get_command.return_value = "dump_container:plastic"
@@ -183,7 +183,7 @@ class TestErrorStateHandler:
 
     def test_dump_aluminium_in_error_state(self, app_in_error_state):
         """Проверить обработку dump_container:aluminium в ERROR."""
-        from Application import AppState
+        from plc import AppState
 
         app = app_in_error_state
         app.websocket_server.get_command.return_value = "dump_container:aluminium"
@@ -195,7 +195,7 @@ class TestErrorStateHandler:
 
     def test_restore_device_exits_error(self, app_in_error_state):
         """Проверить, что restore_device переводит в IDLE."""
-        from Application import AppState
+        from plc import AppState
 
         app = app_in_error_state
         app.websocket_server.get_command.return_value = "restore_device"
@@ -206,7 +206,7 @@ class TestErrorStateHandler:
 
     def test_unknown_command_ignored(self, app_in_error_state):
         """Проверить, что неизвестные команды игнорируются."""
-        from Application import AppState
+        from plc import AppState
 
         app = app_in_error_state
         app.websocket_server.get_command.return_value = "some_unknown_command"
@@ -217,7 +217,7 @@ class TestErrorStateHandler:
 
     def test_empty_command_does_nothing(self, app_in_error_state):
         """Проверить, что пустая команда ничего не делает."""
-        from Application import AppState
+        from plc import AppState
 
         app = app_in_error_state
         app.websocket_server.get_command.return_value = ""
@@ -233,9 +233,9 @@ class TestHelperFunctions:
     @pytest.fixture
     def app_with_mocks(self):
         """Application с замоканными зависимостями."""
-        with patch('Application.PLC') as mock_plc, \
-             patch('Application.WebSocket') as mock_ws:
-            from Application import Application
+        with patch('plc.application.PLC') as mock_plc, \
+             patch('plc.application.WebSocket') as mock_ws:
+            from plc import Application
 
             app = Application(
                 serial_port='/dev/ttyUSB0',
@@ -348,9 +348,9 @@ class TestCommandHandlers:
     @pytest.fixture
     def app_with_mocks(self):
         """Application с замоканными зависимостями."""
-        with patch('Application.PLC') as mock_plc, \
-             patch('Application.WebSocket') as mock_ws:
-            from Application import Application
+        with patch('plc.application.PLC') as mock_plc, \
+             patch('plc.application.WebSocket') as mock_ws:
+            from plc import Application
 
             app = Application(
                 serial_port='/dev/ttyUSB0',
@@ -392,7 +392,7 @@ class TestCommandHandlers:
 
     def test_handle_container_dump_plastic(self, app_with_mocks):
         """Проверить обработку dump_container:plastic."""
-        from Application import AppState
+        from plc import AppState
         app = app_with_mocks
 
         app.handle_container_dump("plastic")
@@ -402,7 +402,7 @@ class TestCommandHandlers:
 
     def test_handle_container_dump_aluminium(self, app_with_mocks):
         """Проверить обработку dump_container:aluminium."""
-        from Application import AppState
+        from plc import AppState
         app = app_with_mocks
 
         app.handle_container_dump("aluminium")
@@ -448,9 +448,9 @@ class TestVisionResponseWithEvents:
     @pytest.fixture
     def app_with_mocks(self):
         """Application с замоканными зависимостями."""
-        with patch('Application.PLC') as mock_plc, \
-             patch('Application.WebSocket') as mock_ws:
-            from Application import Application
+        with patch('plc.application.PLC') as mock_plc, \
+             patch('plc.application.WebSocket') as mock_ws:
+            from plc import Application
 
             app = Application(
                 serial_port='/dev/ttyUSB0',

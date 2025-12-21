@@ -13,7 +13,7 @@ class TestPLCRegisters:
     @pytest.fixture
     def mock_modbus_register(self):
         """Mock для ModbusRegister."""
-        with patch('PLC.ModbusRegister') as mock:
+        with patch('plc.plc.ModbusRegister') as mock:
             mock_instance = MagicMock()
             mock.return_value = mock_instance
             yield mock, mock_instance
@@ -21,13 +21,13 @@ class TestPLCRegisters:
     @pytest.fixture
     def mock_serial(self):
         """Mock для serial."""
-        with patch('PLC.serial.Serial') as mock:
+        with patch('plc.plc.serial.Serial') as mock:
             yield mock
 
     @pytest.fixture
     def mock_modbus_rtu(self):
         """Mock для modbus_rtu."""
-        with patch('PLC.modbus_rtu') as mock:
+        with patch('plc.plc.modbus_rtu') as mock:
             mock_server = MagicMock()
             mock_slave = MagicMock()
             mock.RtuServer.return_value = mock_server
@@ -36,7 +36,7 @@ class TestPLCRegisters:
 
     def test_registers_created(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить создание регистров 20-23."""
-        from PLC import PLC
+        from plc import PLC
 
         mock_reg_class, _ = mock_modbus_register
         _, _, mock_slave = mock_modbus_rtu
@@ -53,7 +53,7 @@ class TestPLCRegisters:
 
     def test_get_bank_count(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить получение количества банок."""
-        from PLC import PLC
+        from plc import PLC
 
         _, mock_instance = mock_modbus_register
         mock_instance.get_value.return_value = 42
@@ -66,7 +66,7 @@ class TestPLCRegisters:
 
     def test_get_bottle_count(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить получение количества бутылок."""
-        from PLC import PLC
+        from plc import PLC
 
         _, mock_instance = mock_modbus_register
         mock_instance.get_value.return_value = 100
@@ -78,7 +78,7 @@ class TestPLCRegisters:
 
     def test_get_bottle_fill_percent(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить получение процента заполнения бутылок."""
-        from PLC import PLC
+        from plc import PLC
 
         _, mock_instance = mock_modbus_register
         mock_instance.get_value.return_value = 75
@@ -90,7 +90,7 @@ class TestPLCRegisters:
 
     def test_get_bank_fill_percent(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить получение процента заполнения банок."""
-        from PLC import PLC
+        from plc import PLC
 
         _, mock_instance = mock_modbus_register
         mock_instance.get_value.return_value = 50
@@ -102,7 +102,7 @@ class TestPLCRegisters:
 
     def test_update_data_syncs_new_registers(self, mock_serial, mock_modbus_rtu, mock_modbus_register):
         """Проверить, что update_data() синхронизирует новые регистры."""
-        from PLC import PLC
+        from plc import PLC
 
         _, mock_instance = mock_modbus_register
 

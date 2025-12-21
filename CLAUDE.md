@@ -15,13 +15,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Сервис ПЛК (контроллер + WebSocket сервер)
-python Application.py
+python -m plc.application
 
 # Сервис инференса (отдельный процесс)
-python inference_service.py
+python -m vision.inference_service
 
 # Интерактивный режим камеры для тестирования
-python inference_service.py --camera
+python -m vision.inference_service --camera
+
+# Симулятор backend (тестирование WebSocket API)
+python -m tools.backend_simulator
 ```
 
 ### Installation
@@ -41,7 +44,7 @@ pip install -r requirements.txt
 │                     WebSocket Server                         │
 │                    (ws://localhost:8765)                     │
 ├─────────────────────────────────────────────────────────────┤
-│                      Application.py                          │
+│                    plc/application.py                        │
 │  ├── State Machine (5 состояний)                            │
 │  ├── Event Manager (события → app клиент)                   │
 │  └── PLC Interface (Modbus RTU @ /dev/ttyUSB0)              │
@@ -50,11 +53,11 @@ pip install -r requirements.txt
            │ WebSocket                    │ WebSocket
            │ (client: "vision")           │ (client: "app")
            ▼                              ▼
-┌─────────────────────┐        ┌─────────────────────┐
-│ inference_service.py│        │   Backend Service   │
-│  ├── CameraManager  │        │  backend_simulator  │
-│  └── InferenceEngine│        │                     │
-└─────────────────────┘        └─────────────────────┘
+┌─────────────────────────────┐    ┌─────────────────────────┐
+│ vision/inference_service.py │    │   Backend Service       │
+│  ├── CameraManager          │    │   (tools/backend_       │
+│  └── InferenceEngine        │    │    simulator.py)        │
+└─────────────────────────────┘    └─────────────────────────┘
 ```
 
 ### State Machine
@@ -128,14 +131,40 @@ IDLE ──(завеса освободилась + контейнер)──►
 - `cmd_restore_device` — восстановить из ERROR
 - `cmd_full_clear_register` — очистить регистр команд
 
-### Key Files
-- `Application.py` — сервис ПЛК, state machine, WebSocket сервер
-- `inference_service.py` — async WebSocket клиент для классификации
-- `camera_manager.py` — потокобезопасная камера с кольцевым буфером
-- `inference_engine.py` — обёртка над YOLO моделью
-- `PLC.py` — Modbus RTU интерфейс с битовыми регистрами
-- `WebSocket.py` — async WebSocket сервер для нескольких клиентов
-- `config.py` — настройки из переменных окружения (.env)
+### Project Structure
+```
+BottleClassifier/
+├── plc/                        # Модуль PLC + State Machine
+│   ├── __init__.py
+│   ├── application.py          # State Machine, WebSocket сервер
+│   ├── plc.py                  # Modbus RTU интерфейс
+│   └── modbus_register.py      # Абстракция регистра
+│
+├── vision/                     # Модуль Vision
+│   ├── __init__.py
+│   ├── inference_service.py    # WebSocket клиент для инференса
+│   ├── camera_manager.py       # Потокобезопасная камера
+│   └── inference_engine.py     # YOLO обёртка
+│
+├── websocket/                  # WebSocket сервер
+│   ├── __init__.py
+│   └── server.py               # Async сервер для клиентов
+│
+├── core/                       # Общие модули
+│   ├── __init__.py
+│   ├── config.py               # Settings из .env
+│   └── logging_config.py       # Настройка логирования
+│
+├── tools/                      # Утилиты
+│   ├── __init__.py
+│   ├── backend_simulator.py    # Симулятор backend
+│   └── terminal.py             # Интерактивный терминал
+│
+├── legacy/                     # Устаревший код (не используется)
+├── tests/                      # Тесты (pytest)
+├── docs/                       # Документация
+└── weights/                    # Веса моделей
+```
 
 ### Modbus Registers
 - **Command Register (25)**: `radxa_detected_bottle` (bit 7), `radxa_detected_bank` (bit 6)
@@ -257,9 +286,8 @@ pytest tests/ -v
 - Vision response handlers
 - Event создание и отправка
 
-## Legacy Files (не используются в основном потоке)
+## Tools
 
-- `interference.py` — альтернативная реализация инференса
-- `InferenceClient.py` — старый TCP клиент (заменён на WebSocket)
-- `Application copy.py` — бэкап
-- `backend_simulator.py` — симулятор для тестирования WebSocket API
+Утилиты для тестирования и отладки в папке `tools/`:
+- `backend_simulator.py` — симулятор backend для тестирования WebSocket API
+- `terminal.py` — интерактивный терминал для отправки команд
