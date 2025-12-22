@@ -141,6 +141,8 @@ def get_settings() -> Settings:
     return _settings
 
 
+
+
 def reload_settings(env_path: Optional[Path] = None) -> Settings:
     """
     Перезагрузить настройки из .env файла.

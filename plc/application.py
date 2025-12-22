@@ -25,7 +25,7 @@ class AppState(Enum):
     ERROR = "error"
 
 class Application:
-    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8080, web_socket_host = 'localhost', speed = 500, photos_dir = 'photos'):
+    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8765, web_socket_host = 'localhost', speed = 500, photos_dir = 'photos'):
         self.PLC = None
         self.websocket_server = None
         self.serial_port = serial_port
@@ -736,4 +736,34 @@ class Application:
             logger.debug(f"ERROR State: команда {app_command} игнорируется")
 
 
+if __name__ == "__main__":
+    import os
+
+    serial_port = os.getenv('PLC_SERIAL_PORT', '/dev/ttyUSB0')
+    baudrate = int(os.getenv('PLC_BAUDRATE', '115200'))
+    slave_address = int(os.getenv('PLC_SLAVE_ADDRESS', '2'))
     
+    logger.info(f"Запуск Application с параметрами:")
+    logger.info(f"  serial_port: {serial_port}")
+    logger.info(f"  baudrate: {baudrate}")
+    logger.info(f"  slave_address: {slave_address}")
+    
+    try:
+        app = Application(
+            serial_port=serial_port,
+            baudrate=baudrate,
+            slave_address=slave_address
+        )
+    
+        if not app.setup():
+            logger.error("Не удалось инициализировать приложение")
+            sys.exit(1)
+        
+        logger.info("Application успешно инициализирован, запуск...")
+        app.run()
+        
+    except KeyboardInterrupt:
+        logger.info("завершение работы...")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске приложения: {e}", exc_info=True)
+        sys.exit(1)
