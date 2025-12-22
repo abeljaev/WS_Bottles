@@ -42,7 +42,7 @@ class Settings:
     """Настройки inference сервиса."""
 
     # Модель
-    model_path: Path = field(default_factory=lambda: Path("/home/radxa/Documents/CODE/BottleClassifier/weights/best_11s_rknn_model"))
+    model_path: Path = field(default_factory=lambda: Path("weights/best_11s_rknn_model"))
     image_size: int = 1280
     warmup_runs: int = 2
 
@@ -92,10 +92,7 @@ class Settings:
 
         return cls(
             # Модель
-            model_path=_get_env_path(
-                "MODEL_PATH",
-                "/home/radxa/Documents/CODE/BottleClassifier/weights/best_11s_rknn_model"
-            ),
+            model_path=_get_env_path("MODEL_PATH", "weights/best_11s_rknn_model"),
             image_size=_get_env_int("IMAGE_SIZE", 1280),
             warmup_runs=_get_env_int("WARMUP_RUNS", 2),
 
