@@ -103,8 +103,8 @@ class InferenceClient:
                     self._websocket = websocket
                     logger.debug("Подключено, отправка имени клиента 'vision'...")
 
-                    # Отправляем имя клиента
-                    await websocket.send("vision")
+                    # Отправляем имя клиента (JSON)
+                    await websocket.send(json.dumps({"client_id": "vision"}))
                     logger.info("Зарегистрирован как 'vision', ожидание запросов...")
 
                     # Открываем камеру и запускаем захват (с попыткой разных индексов)
@@ -259,10 +259,10 @@ class InferenceClient:
             print(f"[TIMING] Дельта распознавания: {inference_delta_ms:.2f}")
 
             # Маппим результат
-            if class_name == "PET":
-                result = "bottle"
-            elif class_name == "CAN":
-                result = "bank"
+            if class_name == "plastic":
+                result = "plastic"
+            elif class_name == "aluminum":
+                result = "aluminum"
             else:
                 result = "none"
 

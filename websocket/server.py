@@ -1,5 +1,6 @@
 import asyncio
 import websockets
+import json
 from typing import Set
 import threading
 import signal
@@ -71,8 +72,23 @@ class WebSocket:
         logger.debug(f"Новое подключение. Всего клиентов: {len(self.clients)}")
         
         try:
-            # Первое сообщение - это имя клиента
-            client_name = await websocket.recv()
+            # Первое сообщение - регистрация
+            raw_msg = await websocket.recv()
+            try:
+                # Пытаемся распарсить JSON
+                data = json.loads(raw_msg)
+                # Поддержка разных форматов ключей для гибкости
+                client_name = data.get("client_id") or data.get("name") or data.get("client")
+            except json.JSONDecodeError:
+                # Fallback для старых клиентов (plain text)
+                client_name = raw_msg.strip()
+                logger.warning(f"Клиент использует устаревший формат регистрации (plain text): '{client_name}'")
+
+            if not client_name:
+                logger.error("Не удалось определить имя клиента, закрываю соединение")
+                await websocket.close()
+                return
+
             with self._clients_lock:
                 self.clients[client_name] = websocket
 
@@ -80,7 +96,8 @@ class WebSocket:
             with self.message_lock:
                 self.client_messages[client_name] = {
                     "message": "",
-                    "timestamp": time.time()
+                    "timestamp": time.time(),
+                    "just_connected": True  # Флаг нового подключения
                 }
             
             logger.info(f"Клиент зарегистрирован: '{client_name}'. Всего: {len(self.clients)}")
@@ -210,6 +227,18 @@ class WebSocket:
                 self.client_messages[client_name]["message"] = ""  # Обнуляем после прочтения
                 return message
             return ""
+
+    def is_client_just_connected(self, client_name: str) -> bool:
+        """
+        Проверить, подключился ли клиент только что.
+        Сбрасывает флаг после проверки.
+        """
+        with self.message_lock:
+            if client_name in self.client_messages:
+                if self.client_messages[client_name].get("just_connected", False):
+                    self.client_messages[client_name]["just_connected"] = False
+                    return True
+        return False
     
     def get_state(self, client_name: str) -> str:
         """Получить состояние от клиента (непрерывное значение)"""

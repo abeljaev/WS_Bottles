@@ -32,9 +32,9 @@ class InferenceEngine:
 
     # Маппинг классов модели на выходные значения
     CLASS_MAPPING = {
-        "PET": "PET",
-        "CAN": "CAN",
-        "FOREIGN": "NONE",
+        "PET": "plastic",
+        "CAN": "aluminum",
+        "FOREIGN": "none",
     }
 
     def __init__(self, settings: Settings):

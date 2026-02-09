@@ -25,7 +25,7 @@ class AppState(Enum):
     ERROR = "error"
 
 class Application:
-    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8765, web_socket_host = 'localhost', speed = 500, photos_dir = 'photos'):
+    def __init__(self, serial_port, baudrate, slave_address, cmd_register = 25, status_register = 26, update_data_period = 0.1, web_socket_port = 8765, web_socket_host = 'localhost', speed = 500, photos_dir = 'imgs'):
         self.PLC = None
         self.websocket_server = None
         self.serial_port = serial_port
@@ -41,6 +41,12 @@ class Application:
         self.photos_dir = Path(photos_dir)
         # Создаём папку для фото, если её нет
         self.photos_dir.mkdir(parents=True, exist_ok=True)
+
+        # Конфигурация устройства
+        self.device_config = None
+        
+        # Состояние виртуальной двери (пока нет поддержки в ПЛК)
+        self.door_locked = False
 
         self.flag = False
         self.time_flag = time.time()
@@ -88,14 +94,15 @@ class Application:
         self._command_handlers = {
             "get_photo": (self.handle_get_photo, False),
             "get_device_info": (self.handle_get_device_info, False),
+            "device_init": (self.handle_device_init, True),
             "dump_container": (self.handle_container_dump, True),
             "container_unloaded": (self.handle_container_unloaded, True),
+            "lock_door": (self.handle_lock_door, False),
+            "unlock_door": (self.handle_unlock_door, False),
             # Заглушки
             "enter_service_mode": (self.handle_stub_command, False),
             "exit_service_mode": (self.handle_stub_command, False),
             "restore_device": (self.handle_stub_command, False),
-            "unlock_door": (self.handle_stub_command, False),
-            "lock_door": (self.handle_stub_command, False),
             "open_shutter": (self.handle_stub_command, False),
             "reboot_device": (self.handle_stub_command, False),
             # Служебные команды PLC
@@ -110,7 +117,7 @@ class Application:
         self._dumping_config = {
             AppState.DUMPING_PLASTIC: {
                 "sensor_getter": lambda: self.PLC.get_state_left_sensor_carriage(),
-                "type": "PET",
+                "type": "plastic",
                 "counter_getter": lambda: self.PLC.get_bottle_count(),
                 "error_code": "carriage_left_timeout",
                 "error_message": "Таймаут движения каретки влево",
@@ -118,7 +125,7 @@ class Application:
             },
             AppState.DUMPING_ALUMINUM: {
                 "sensor_getter": lambda: self.PLC.get_state_right_sensor_carriage(),
-                "type": "ALUMINUM",
+                "type": "aluminum",
                 "counter_getter": lambda: self.PLC.get_bank_count(),
                 "error_code": "carriage_right_timeout",
                 "error_message": "Таймаут движения каретки вправо",
@@ -212,11 +219,11 @@ class Application:
                     # Обновляем current_plc_detection из ПЛК если ещё не определён
                     if self.current_plc_detection is None:
                         if self.PLC.get_bottle_exist() == 1:
-                            self.current_plc_detection = "bottle"
-                            logger.info("ПЛК определил: bottle")
+                            self.current_plc_detection = "plastic"
+                            logger.info("ПЛК определил: plastic")
                         elif self.PLC.get_bank_exist() == 1:
-                            self.current_plc_detection = "bank"
-                            logger.info("ПЛК определил: bank")
+                            self.current_plc_detection = "aluminum"
+                            logger.info("ПЛК определил: aluminum")
 
                     # Проверяем готовность обоих результатов
                     if self._pending_vision_response is not None and self.current_plc_detection is not None:
@@ -254,6 +261,11 @@ class Application:
 
                 # ОБРАБОТКА КОМАНД ТОЛЬКО В СОСТОЯНИИ IDLE
                 elif self.state == AppState.IDLE:
+                    
+                    # Проверка подключения нового клиента (app)
+                    if self.websocket_server.is_client_just_connected("app"):
+                        logger.info("Новое подключение app → отправка device_info")
+                        self.handle_get_device_info()
 
                     # Отслеживание завесы
                     current_veil = self.PLC.get_state_veil()
@@ -277,10 +289,10 @@ class Application:
 
                         # Определяем тип контейнера по ПЛК (если уже есть) или используем bottle_exist по умолчанию
                         if self.PLC.get_bottle_exist() == 1:
-                            self.current_plc_detection = "bottle"
+                            self.current_plc_detection = "plastic"
                             vision_cmd = "bottle_exist"
                         elif self.PLC.get_bank_exist() == 1:
-                            self.current_plc_detection = "bank"
+                            self.current_plc_detection = "aluminum"
                             vision_cmd = "bank_exist"
                         else:
                             # ПЛК ещё не определил тип - запускаем инференс всё равно
@@ -288,7 +300,7 @@ class Application:
                             vision_cmd = "bottle_exist"  # Команда для запуска инференса
 
                         # Событие: контейнер обнаружен
-                        self.send_event_to_app("container_detected", {"plc_type": self.current_plc_detection or "unknown"})
+                        self.send_event_to_app("container_detected", {"container_type": self.current_plc_detection or "unknown"})
                         # Сброс старых ответов vision перед новым запросом
                         self.websocket_server.get_command("vision")
                         self.websocket_server.send_to_client("vision", vision_cmd)
@@ -336,7 +348,7 @@ class Application:
                 self.state = AppState.IDLE
             self.dump_started_time = None
             self.send_event_to_app("container_accepted", {
-                "type": config["type"],
+                "container_type": config["type"],
                 "counter": config["counter_getter"]()
             })
         elif time.time() - self.dump_started_time > self.dump_timeout:
@@ -461,14 +473,11 @@ class Application:
 
     def parse_command(self, message: str) -> tuple:
         """
-        Парсить команду от клиента (JSON или строка).
+        Парсить команду от клиента (только JSON).
 
         Поддерживает форматы:
-        - JSON: {"command": "name", "param": "value"}
         - JSON: {"command": "name", "container_type": "plastic"}
-        - JSON: {"command": "name", "type": "plastic"}
-        - Строка с параметром: "command:param"
-        - Простая строка: "command"
+        - JSON: {"command": "name", "param": "value"} (для обратной совместимости некоторых команд)
 
         Args:
             message: Сообщение от клиента.
@@ -483,23 +492,40 @@ class Application:
         try:
             data = json.loads(message)
             command = data.get("command")
-            # Нормализация: поддержка альтернативных ключей для параметра
-            if "container_type" in data and "param" not in data:
+            
+            # Приоритет параметра container_type
+            if "container_type" in data:
                 data["param"] = data["container_type"]
-            elif "type" in data and "param" not in data:
-                data["param"] = data["type"]
+            elif "config" in data:
+                data["param"] = data["config"]
+            
             return command, data
         except json.JSONDecodeError:
-            pass
+            logger.warning(f"Получена некорректная команда (не JSON): {message}")
+            return None, {}
 
-        # Fallback к строковому формату
-        if ":" in message:
-            cmd, param = message.split(":", 1)
-            return cmd, {"param": param}
-
-        return message, {}
+        return None, {}
 
     # === ОБРАБОТЧИКИ КОМАНД ОТ APP ===
+
+    def handle_device_init(self, config: dict):
+        """
+        Обработчик команды device_init.
+        
+        Принимает конфигурацию устройства (лимиты, типы тары и т.д.).
+        
+        Args:
+            config: Словарь с конфигурацией.
+        """
+        if not config:
+            logger.warning("device_init: получена пустая конфигурация")
+            return
+
+        logger.info(f"Инициализация устройства с конфигурацией: {config}")
+        self.device_config = config
+        
+        # Отправляем подтверждение
+        self.send_event_to_app("device_init_ack", {"status": "ok"})
 
     def handle_get_device_info(self):
         """
@@ -517,6 +543,7 @@ class Application:
             "center_sensor": self.PLC.get_state_center_sensor_carriage(),
             "right_sensor": self.PLC.get_state_right_sensor_carriage(),
             "weight_error": self.PLC.get_state_weight_error(),
+            "door_locked": self.door_locked,  # Добавляем статус двери
         }
         self.send_event_to_app("device_info", device_info)
 
@@ -524,8 +551,8 @@ class Application:
         """
         Обработчик команды get_photo.
 
-        Запрашивает фото у vision сервиса и пересылает клиенту app.
-        Если vision недоступен, возвращает ошибку.
+        Запрашивает фото у vision сервиса, сохраняет на диск и отправляет путь клиенту app.
+        Base64 данные клиенту НЕ отправляются.
         """
         # Сброс старых ответов и отправка команды get_photo в vision
         self.websocket_server.get_command("vision")
@@ -544,10 +571,18 @@ class Application:
                     if "photo_base64" in data:
                         # Сохраняем фото в файл
                         photo_path = self._save_photo(data["photo_base64"])
+                        
+                        # Формируем ответ клиенту: ТОЛЬКО ПУТЬ
+                        response_data = {"timestamp": data.get("timestamp")}
+                        
                         if photo_path:
-                            data["photo_path"] = str(photo_path)
+                            # Возвращаем абсолютный путь к файлу
+                            response_data["photo_path"] = str(photo_path.absolute())
                             logger.info(f"Фото сохранено: {photo_path}")
-                        self.send_event_to_app("photo_ready", data)
+                        else:
+                            response_data["error"] = "save_failed"
+
+                        self.send_event_to_app("photo_ready", response_data)
                         return
                     elif "error" in data:
                         self.send_event_to_app("photo_ready", {"error": data["error"]})
@@ -564,7 +599,7 @@ class Application:
         Обработчик команды container_dump.
 
         Args:
-            container_type: Тип контейнера ("plastic" или "aluminium").
+            container_type: Тип контейнера ("plastic" или "aluminum").
         """
         if container_type == "plastic":
             logger.info("Команда: сброс пластика (влево)")
@@ -573,13 +608,13 @@ class Application:
             self.dump_started_time = time.time()
             self.PLC.cmd_force_move_carriage_left()
             self.send_event_to_app("container_dumped", {"container_type": "plastic"})
-        elif container_type == "aluminium":
+        elif container_type == "aluminum":
             logger.info("Команда: сброс алюминия (вправо)")
             with self.state_lock:
                 self.state = AppState.DUMPING_ALUMINUM
             self.dump_started_time = time.time()
             self.PLC.cmd_force_move_carriage_right()
-            self.send_event_to_app("container_dumped", {"container_type": "aluminium"})
+            self.send_event_to_app("container_dumped", {"container_type": "aluminum"})
         else:
             logger.warning(f"Неизвестный тип контейнера: {container_type}")
 
@@ -588,15 +623,27 @@ class Application:
         Обработчик команды container_unloaded (мешок выгружен).
 
         Args:
-            container_type: Тип контейнера ("plastic" или "aluminium").
+            container_type: Тип контейнера ("plastic" или "aluminum").
         """
         if container_type == "plastic":
             logger.info("Мешок пластика выгружен, сброс счетчика")
             self.PLC.cmd_reset_bottle_counters()
-        elif container_type == "aluminium":
+        elif container_type == "aluminum":
             logger.info("Мешок алюминия выгружен, сброс счетчика")
             self.PLC.cmd_reset_bank_counters()
         self.send_event_to_app("container_unloaded_ack", {"container_type": container_type})
+
+    def handle_lock_door(self):
+        """Обработчик команды блокировки двери."""
+        logger.info("Команда: lock_door")
+        self.door_locked = True
+        self.send_event_to_app("up_door_locked", {"status": "ok"})
+
+    def handle_unlock_door(self):
+        """Обработчик команды разблокировки двери."""
+        logger.info("Команда: unlock_door")
+        self.door_locked = False
+        self.send_event_to_app("up_door_unlocked", {"status": "ok"})
 
     def handle_stub_command(self, command_name: str):
         """
@@ -643,18 +690,18 @@ class Application:
         Обработка ответа от vision сервиса (без событий, для тестов).
 
         Args:
-            vision_response: Ответ vision ("bottle", "bank", "none").
+            vision_response: Ответ vision ("plastic", "aluminum", "none").
         """
         if vision_response == "none":
             logger.info("Vision: контейнер не распознан")
             return
 
         # Проверяем совпадение с детектом ПЛК
-        if self.current_plc_detection == "bottle" and vision_response == "bottle":
-            logger.info("Vision: подтверждено бутылка → PLC cmd")
+        if self.current_plc_detection == "plastic" and vision_response == "plastic":
+            logger.info("Vision: подтверждено plastic → PLC cmd")
             self.PLC.cmd_radxa_detected_bottle()
-        elif self.current_plc_detection == "bank" and vision_response == "bank":
-            logger.info("Vision: подтверждено банка → PLC cmd")
+        elif self.current_plc_detection == "aluminum" and vision_response == "aluminum":
+            logger.info("Vision: подтверждено aluminum → PLC cmd")
             self.PLC.cmd_radxa_detected_bank()
         else:
             logger.warning(f"Vision: несовпадение! ПЛК: {self.current_plc_detection}, Vision: {vision_response}")
@@ -664,7 +711,7 @@ class Application:
         Обработка ответа от vision сервиса с отправкой событий.
 
         Args:
-            vision_response: Ответ vision ("bottle", "bank", "none").
+            vision_response: Ответ vision ("plastic", "aluminum", "none").
         """
         if vision_response == "none":
             logger.info("Vision: контейнер не распознан")
@@ -673,26 +720,26 @@ class Application:
             return
 
         # Проверяем совпадение с детектом ПЛК
-        if self.current_plc_detection == "bottle" and vision_response == "bottle":
-            logger.info("Vision: бутылка → PLC cmd")
+        if self.current_plc_detection == "plastic" and vision_response == "plastic":
+            logger.info("Vision: plastic → PLC cmd")
             self.PLC.cmd_radxa_detected_bottle()
             # Устанавливаем флаг начала движения каретки
             self.carriage_moving_bottle = True
             self.carriage_moving_start_time = time.time()
             # Событие: контейнер распознан
             self.send_event_to_app("container_recognized", {
-                "type": "PET",
+                "container_type": "plastic",
                 "confidence": 1.0  # TODO: получать от vision
             })
-        elif self.current_plc_detection == "bank" and vision_response == "bank":
-            logger.info("Vision: банка → PLC cmd")
+        elif self.current_plc_detection == "aluminum" and vision_response == "aluminum":
+            logger.info("Vision: aluminum → PLC cmd")
             self.PLC.cmd_radxa_detected_bank()
             # Устанавливаем флаг начала движения каретки
             self.carriage_moving_bank = True
             self.carriage_moving_start_time = time.time()
             # Событие: контейнер распознан
             self.send_event_to_app("container_recognized", {
-                "type": "ALUMINUM",
+                "container_type": "aluminum",
                 "confidence": 1.0  # TODO: получать от vision
             })
         else:

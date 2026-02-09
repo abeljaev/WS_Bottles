@@ -71,8 +71,9 @@ class BackendSimulator:
         try:
             print(f"[Simulator] Подключение к {self.uri}...")
             self.ws = await websockets.connect(self.uri)
-            await self.ws.send("app")
-            print("[Simulator] Подключено, зарегистрирован как 'app'")
+            # Отправляем регистрацию в JSON формате
+            await self.ws.send(json.dumps({"client_id": "app"}))
+            print("[Simulator] Подключено, зарегистрирован как 'app' (JSON)")
             return True
         except Exception as e:
             print(f"[Simulator] Ошибка подключения: {e}")
@@ -224,6 +225,9 @@ async def interactive_mode(simulator: BackendSimulator):
     print("  8. listen            - Слушать события 5 сек")
     print("  9. history           - Показать историю событий")
     print("  0. clear_register    - Очистить регистр команд ПЛК")
+    print("  l. lock_door         - Заблокировать дверь")
+    print("  u. unlock_door       - Разблокировать дверь")
+    print("  i. device_init       - Инициализировать устройство")
     print("  q. Выход")
     print("-" * 40)
 
@@ -244,28 +248,29 @@ async def interactive_mode(simulator: BackendSimulator):
                 await asyncio.sleep(0.3)
                 event = await simulator.listen_events(timeout=3.0)
                 if event:
-                    if "photo_base64" in event.get("data", {}):
-                        b64_len = len(event["data"]["photo_base64"])
-                        photo_path = event["data"].get("photo_path", "не указан")
-                        print(f"  [Событие] photo_ready: base64 ({b64_len} символов)")
-                        if photo_path != "не указан":
-                            print(f"  [Файл] Сохранено: {photo_path}")
+                    data = event.get("data", {})
+                    photo_path = data.get("photo_path")
+                    if photo_path:
+                        print(f"  [Событие] photo_ready")
+                        print(f"  [Файл] Путь на устройстве: {photo_path}")
+                    elif "error" in data:
+                        print(f"  [Ошибка] {data['error']}")
                     else:
                         simulator._print_event(event)
             elif cmd == "3":
-                await simulator.send_command("dump_container:plastic")
+                await simulator.send_command("dump_container", {"container_type": "plastic"})
                 await simulator.listen_all_events(duration=5.0)
             elif cmd == "4":
-                await simulator.send_command("dump_container:aluminium")
+                await simulator.send_command("dump_container", {"container_type": "aluminum"})
                 await simulator.listen_all_events(duration=5.0)
             elif cmd == "5":
-                await simulator.send_command("container_unloaded:plastic")
+                await simulator.send_command("container_unloaded", {"container_type": "plastic"})
                 await asyncio.sleep(0.3)
                 event = await simulator.listen_events(timeout=2.0)
                 if event:
                     simulator._print_event(event)
             elif cmd == "6":
-                await simulator.send_command("container_unloaded:aluminium")
+                await simulator.send_command("container_unloaded", {"container_type": "aluminum"})
                 await asyncio.sleep(0.3)
                 event = await simulator.listen_events(timeout=2.0)
                 if event:
@@ -283,14 +288,26 @@ async def interactive_mode(simulator: BackendSimulator):
             elif cmd == "0":
                 await simulator.send_command("cmd_full_clear_register")
                 print("  Команда отправлена")
-            else:
-                # Попытка отправить как raw команду
-                if cmd:
-                    await simulator.send_command(cmd)
-                    await asyncio.sleep(0.3)
-                    event = await simulator.listen_events(timeout=2.0)
-                    if event:
-                        simulator._print_event(event)
+            elif cmd == "l":
+                await simulator.send_command("lock_door")
+                await asyncio.sleep(0.3)
+                event = await simulator.listen_events(timeout=2.0)
+                if event: simulator._print_event(event)
+            elif cmd == "u":
+                await simulator.send_command("unlock_door")
+                await asyncio.sleep(0.3)
+                event = await simulator.listen_events(timeout=2.0)
+                if event: simulator._print_event(event)
+            elif cmd == "i":
+                config = {
+                    "max_plastic_count": 500,
+                    "max_aluminum_count": 300,
+                    "accepted_types": ["plastic", "aluminum"]
+                }
+                await simulator.send_command("device_init", {"config": config})
+                await asyncio.sleep(0.3)
+                event = await simulator.listen_events(timeout=2.0)
+                if event: simulator._print_event(event)
 
         except KeyboardInterrupt:
             print("\nПрервано")
